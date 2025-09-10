@@ -203,24 +203,33 @@ if not master_file or not weights_file:
 # 2) Carga y validaciones
 # =========================
 
-# Leer el Excel maestro de Allfunds (fila 1 = cabeceras reales)
-df_master_raw = pd.read_excel(master_file, header=1)
+# ✅ Leer el Excel maestro EXACTAMENTE como en tu app original
+df_master_raw = pd.read_excel(master_file, skiprows=2)
 
-# Renombrar las columnas clave al formato estándar que usa la app
-rename_map = {
-    "Family Name": "Family Name",
-    "Type of Share": "Type of Share",
-    "Currency": "Currency",
-    "Hedged": "Hedged",
-    "MiFID FH": "MiFID FH",
-    "Min. Initial": "Min. Initial",
-    "Ongoing Charge": "Ongoing Charge",
-    "ISIN": "ISIN",
-    "Prospectus AF - Prospectus details": "Prospectus AF",
-    "Prospectus AF - Independent Advice (IA)*": "Prospectus AF IA",
-    "Transferable": "Transferable"  # si aparece en tu Excel
-}
-df_master_raw.rename(columns=rename_map, inplace=True)
+# Validar columnas requeridas como en tu app original
+required_cols = [
+    "Family Name","Type of Share","Currency","Hedged",
+    "MiFID FH","Min. Initial","Ongoing Charge","ISIN","Prospectus AF"
+]
+missing = [c for c in required_cols if c not in df_master_raw.columns]
+if missing:
+    st.error(f"Faltan columnas en el maestro: {missing}")
+    st.stop()
+
+# Detectar 'Transferable' como en la app original
+has_transferable = "Transferable" in df_master_raw.columns
+st.success("Fichero maestro importado correctamente.")
+
+# ✅ Limpieza de 'Ongoing Charge' EXACTA a la app original
+df_master_raw["Ongoing Charge"] = (
+    df_master_raw["Ongoing Charge"].astype(str)
+        .str.replace("%","", regex=False)
+        .str.replace(",",".", regex=False)
+        .astype(float)
+)
+
+# Mantener la variable df_master para el resto de tu lógica
+df_master = df_master_raw
 
 required_cols = [
     "Family Name","Type of Share","Currency","Hedged",
