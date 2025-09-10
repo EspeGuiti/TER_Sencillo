@@ -1,258 +1,75 @@
-import streamlit as st 
+import streamlit as st
 import pandas as pd
 import numpy as np
 
-st.set_page_config(layout="wide")
-st.markdown("# 📊 Calculadora de TER de Cartera")
+# =========================
+# Configuración de página
+# =========================
+st.set_page_config(page_title="Calculadora TER + AI", layout="wide")
+st.markdown("# 📊 Calculadora de TER — Cartera I vs Cartera II (Asesoramiento Independiente)")
 
-# ─── Estado de sesión ───
-if "saved_portfolios" not in st.session_state:
-    st.session_state.saved_portfolios = []
-if "current_portfolio" not in st.session_state:
-    st.session_state.current_portfolio = None
-if "current_errors" not in st.session_state:
-    st.session_state.current_errors = []
-if "preview_ii" not in st.session_state:
-    st.session_state.preview_ii = False
+# =========================
+# Estado de sesión
+# =========================
+if "cartera_I" not in st.session_state:
+    st.session_state.cartera_I = None  # {"table": df, "ter": float}
+if "cartera_II" not in st.session_state:
+    st.session_state.cartera_II = None
+if "incidencias" not in st.session_state:
+    st.session_state.incidencias = []
 
-# NUEVO: flags/estado para poder editar una cartera importada
-if "edit_import_to_manual" not in st.session_state:
-    st.session_state.edit_import_to_manual = False
-if "edited_rows" not in st.session_state:
-    st.session_state.edited_rows = []
+# =========================
+# Helpers
+# =========================
+def _to_float_percent_like(x):
+    """Convierte '1,23%' o '1.23' a float (1.23)."""
+    if pd.isna(x):
+        return np.nan
+    s = str(x).strip()
+    s = s.replace("%", "").replace(",", ".")
+    try:
+        return float(s)
+    except Exception:
+        return np.nan
 
-# ─── Callbacks Guardar/Comparar ───
-def save_as_I():
-    st.session_state.saved_portfolios.append({
-        "label": "Cartera I",
-        **st.session_state.current_portfolio
-    })
+def _clean_master(dfm):
+    """Limpia columnas críticas del maestro."""
+    df = dfm.copy()
+    # Ongoing Charge a float (no %)
+    if "Ongoing Charge" in df.columns:
+        df["Ongoing Charge"] = df["Ongoing Charge"].apply(_to_float_percent_like)
+    # Normalizar Transferable a Yes/No strings
+    if "Transferable" in df.columns:
+        def norm_tf(v):
+            if pd.isna(v): return ""
+            s = str(v).strip().lower()
+            if s in {"yes", "y", "true", "1"}: return "Yes"
+            if s in {"no", "n", "false", "0"}: return "No"
+            return str(v)  # dejar tal cual si trae otro valor
+        df["Transferable"] = df["Transferable"].apply(norm_tf)
+    return df
 
-def save_as_II():
-    st.session_state.saved_portfolios.append({
-        "label": "Cartera II",
-        **st.session_state.current_portfolio
-    })
-    st.session_state.preview_ii = False
-    st.session_state.edit_import_to_manual = False
+def _clean_weights(dfw):
+    """Limpia pesos de la cartera."""
+    df = dfw.copy()
+    if "Peso %" not in df.columns:
+        raise ValueError("El Excel de cartera debe incluir la columna 'Peso %'.")
+    df["Peso %"] = df["Peso %"].apply(_to_float_percent_like)
+    return df
 
-# ─── Paso 1: Cargar fichero maestro ───
-master_file = st.file_uploader("Sube el Excel de All Funds con TODAS las clases de participación", type=["xlsx"])
-if not master_file:
-    st.stop()
+def _format_eu_number(x, decimals=4):
+    if pd.isna(x):
+        return x
+    s = f"{x:,.{decimals}f}"
+    return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
-df = pd.read_excel(master_file, skiprows=2)
-
-required_cols = [
-    "Family Name","Type of Share","Currency","Hedged",
-    "MiFID FH","Min. Initial","Ongoing Charge","ISIN","Prospectus AF"
-]
-missing = [c for c in required_cols if c not in df.columns]
-if missing:
-    st.error(f"Faltan columnas en el fichero importado: {missing}")
-    st.stop()
-
-has_transferable = "Transferable" in df.columns
-st.success("Fichero importado correctamente.")
-
-# Limpieza Ongoing Charge
-df["Ongoing Charge"] = (
-    df["Ongoing Charge"].astype(str)
-       .str.replace("%","")
-       .str.replace(",",".")
-       .astype(float)
-)
-
-# ─── Modo de entrada ───
-mode = st.radio(
-    "¿Cómo quieres construir la cartera?",
-    ("Elegir manualmente pesos y clases de participación",
-     "Importar Excel con ISINs y pesos existentes")
-)
-
-edited = []
-filter_cols = ["Type of Share","Currency","Hedged","MiFID FH","Min. Initial"]
-global_filters = {}
-
-if mode == "Importar Excel con ISINs y pesos existentes":
-    weights_file = st.file_uploader(
-        "Sube un Excel con columnas 'ISIN' y 'Peso %'", type=["xlsx"], key="weights"
-    )
-    if weights_file:
-        wdf = pd.read_excel(weights_file)
-        req2 = ["ISIN", "Peso %"]
-        miss2 = [c for c in req2 if c not in wdf.columns]
-        if miss2:
-            st.error(f"Faltan columnas en el fichero de cartera: {miss2}")
-        else:
-            st.success("Cartera existente cargada.")
-    
-            # Agrupar ISINs duplicados sumando los pesos
-            wdf = wdf.groupby("ISIN", as_index=False)["Peso %"].sum()
-    
-            # Merge con el fichero maestro
-            merged = pd.merge(wdf, df, on="ISIN", how="left", validate="one_to_many")
-    
-            if merged["Family Name"].isnull().any():
-                bad = merged[merged["Family Name"].isnull()]["ISIN"].tolist()
-                st.error(f"No hay datos para ISIN(s): {bad}")
-            else:
-                for _, row in merged.iterrows():
-                    edited.append({
-                        "Family Name":   row["Family Name"],
-                        "Type of Share": row["Type of Share"],
-                        "Currency":      row["Currency"],
-                        "Hedged":        row["Hedged"],
-                        "MiFID FH":      row["MiFID FH"],
-                        "Min. Initial":  row["Min. Initial"],
-                        "Weight %":      float(row["Peso %"])
-                    })
-                st.markdown("**Cartera precargada desde la importación.**")
-                st.session_state.edited_rows = edited.copy()
-else:
-    st.subheader("Paso 2: Filtros globales de clases de participación")
-    opts = {col: sorted(df[col].dropna().unique()) for col in filter_cols}
-    c1,c2,c3,c4,c5 = st.columns(5)
-    with c1:
-        global_filters["Type of Share"] = st.selectbox("Tipo de participación", opts["Type of Share"])
-    with c2:
-        global_filters["Currency"] = st.selectbox("Divisa", opts["Currency"])
-    with c3:
-        global_filters["Hedged"] = st.selectbox("Hedged", opts["Hedged"])
-    with c4:
-        global_filters["MiFID FH"] = st.selectbox("MiFID FH", opts["MiFID FH"])
-    with c5:
-        global_filters["Min. Initial"] = st.selectbox("Mín. Inversión", opts["Min. Initial"])
-
-    # ─── Paso 3: Personaliza la clase por fondo (cascada) ───
-    st.subheader("Paso 3: Personaliza la clase por fondo")
-    st.write("ℹ️ *Prospectus AF y Traspasable se calculan automáticamente con la clase seleccionada.*")
-
-    for idx, fam in enumerate(df["Family Name"].dropna().unique()):
-        fund_df = df[df["Family Name"] == fam].copy()
-        st.markdown(f"---\n#### {fam}")
-
-        cols = st.columns([1.5,1.1,1.1,1.2,1.2,1.0,1.5])
-        row = {"Family Name": fam}
-        context = fund_df.copy()
-
-        def cascade(i, label, key, ctx):
-            options = sorted(ctx[key].dropna().unique().tolist())
-            init = global_filters.get(key)
-            init = init if (init in options) else "NO ENCONTRADO"
-            if init == "NO ENCONTRADO":
-                options = ["NO ENCONTRADO"] + options
-            sel = cols[i].selectbox(label, options, index=options.index(init), key=f"{key}_{idx}")
-            new_ctx = ctx if sel == "NO ENCONTRADO" else ctx[ctx[key] == sel]
-            return sel, new_ctx
-
-        # Orden en cascada
-        row["Type of Share"], context = cascade(0, "Tipo de participación", "Type of Share", context)
-        row["Currency"],     context = cascade(1, "Divisa",                 "Currency",     context)
-        row["Hedged"],       context = cascade(2, "Hedged",                 "Hedged",       context)
-        row["MiFID FH"],     context = cascade(3, "MiFID FH",               "MiFID FH",     context)
-        row["Min. Initial"], context = cascade(4, "Mín. Inversión",         "Min. Initial", context)
-
-        row["Weight %"] = cols[5].number_input(
-            "Peso %",
-            min_value=0.0, max_value=100.0, step=0.1,
-            key=f"weight_{idx}"
-        )
-
-        # Info visual basada en el contexto final (combinación real)
-        prospectus_info = "—"
-        transferable_info = "—"
-        valid = all(row.get(k) != "NO ENCONTRADO" for k in filter_cols)
-        if valid and not context.empty:
-            best = context.loc[context["Ongoing Charge"].idxmin()]
-            prospectus_info  = str(best.get("Prospectus AF", "—"))
-            if has_transferable:
-                transferable_info = str(best.get("Transferable", "—"))
-
-        with cols[6]:
-            st.markdown(f"**Prospectus AF:** {prospectus_info}")
-            st.markdown(f"**Traspasable:** {transferable_info}")
-
-        edited.append(row)
-
-    st.session_state.edited_rows = edited.copy()
-
-# ─── Total Weight Summary & Equal Weight Button ───
-total_weight = sum(r["Weight %"] for r in edited)
-n_funds = len(edited)
-
-col_sum, col_eq = st.columns([3,1])
-with col_sum:
-    st.subheader("Total Weight")
-    st.write(f"{total_weight:.2f}%")
-    if abs(total_weight - 100.0) > 1e-6:
-        st.warning("Total must sum to 100% before calculating TER")
-
-# Sólo en modo MANUAL mostramos Equal Weight
-if mode == "Elegir manualmente pesos y clases de participación":
-    def equalize_weights():
-        if n_funds > 0:
-            w = 100.0 / n_funds
-            for i in range(n_funds):
-                st.session_state[f"weight_{i}"] = w
-    with col_eq:
-        st.button("Equal Weight", on_click=equalize_weights)
-
-# ─── Paso 4: Calcular TER ───
-st.subheader("Paso 4: Calcular TER")
-if st.button("Calcular TER"):
-    results, errors = [], []
-    total_weighted = 0.0
-    total_w = 0.0
-    for row in edited:
-        keys = ["Type of Share","Currency","Hedged","MiFID FH","Min. Initial"]
-        if any(row.get(k) == "NO ENCONTRADO" for k in keys):
-            errors.append((row["Family Name"], "Selección inválida"))
-            continue
-
-        match = df[
-            (df["Family Name"] == row["Family Name"]) &
-            (df["Type of Share"] == row["Type of Share"]) &
-            (df["Currency"] == row["Currency"]) &
-            (df["Hedged"] == row["Hedged"]) &
-            (df["MiFID FH"] == row["MiFID FH"]) &
-            (df["Min. Initial"] == row["Min. Initial"])
-        ]
-        if match.empty:
-            errors.append((row["Family Name"], "No se encontró clase que coincida"))
-            continue
-
-        best = match.loc[match["Ongoing Charge"].idxmin()]
-        charge = best["Ongoing Charge"]
-        w = row["Weight %"]
-        total_weighted += charge * (w/100)
-        total_w += w
-
-        result_row = {
-            **row,
-            "ISIN": best["ISIN"],
-            "Prospectus AF": best.get("Prospectus AF", "—"),
-            "Ongoing Charge": charge
-        }
-        if has_transferable:
-            result_row["Transferable"] = best.get("Transferable", "—")
-        results.append(result_row)
-
-    df_res = pd.DataFrame(results)
-    if total_w > 0:
-        ter = total_weighted / (total_w/100)
-        st.session_state.current_portfolio = {"table": df_res, "ter": ter}
-    else:
-        st.session_state.current_portfolio = {"table": df_res, "ter": None}
-    st.session_state.current_errors = errors
-
-# ─── Utilidad: preparar tabla bonita ───
 def pretty_table(df_in: pd.DataFrame) -> pd.DataFrame:
+    """Reordena y renombra columnas para la visualización."""
     tbl = df_in.copy()
-    if "Traspasable" in tbl.columns:
-        pass
-    elif "Transferable" in tbl.columns:
+    # Unificar "Transferable" -> "Traspasable" para mostrar
+    if "Traspasable" not in tbl.columns and "Transferable" in tbl.columns:
         tbl.rename(columns={"Transferable": "Traspasable"}, inplace=True)
+
     desired = [
         "Family Name",
         "Type of Share", "Currency", "Hedged", "MiFID FH", "Min. Initial",
@@ -262,199 +79,232 @@ def pretty_table(df_in: pd.DataFrame) -> pd.DataFrame:
     existing = [c for c in desired if c in tbl.columns]
     rest = [c for c in tbl.columns if c not in existing]
     return tbl[existing + rest]
-# ─── Paso 5: Mostrar cartera ───
-if st.session_state.current_portfolio:
-    cp = st.session_state.current_portfolio
 
-    if st.session_state.get("preview_ii", False):
-        st.subheader("Paso 5: Cartera II (previsualización)")
-        if len(st.session_state.saved_portfolios) == 1:
-            st.info("Revisa esta **Cartera II (previsualización)**. Si está OK, en el Paso 6 pulsa **Comparar con Cartera I** para fijarla y comparar.")
-    else:
-        st.subheader("Paso 5: Tabla final")
+def calcular_ter(df_rows: pd.DataFrame) -> float:
+    """TER ponderado: sum(OC * w/100) / (sum(w)/100)."""
+    if df_rows.empty:
+        return None
+    if "Ongoing Charge" not in df_rows.columns or "Weight %"(not in df_rows.columns):
+        return None
+    total_w = df_rows["Weight %"].sum()
+    if total_w <= 0:
+        return None
+    weighted = (df_rows["Ongoing Charge"] * (df_rows["Weight %"] / 100.0)).sum()
+    return weighted / (total_w / 100.0)
 
-    # Copia de la tabla bonita
-    df_show = pretty_table(cp["table"]).copy()
+def merge_cartera_con_maestro(df_master: pd.DataFrame, df_weights: pd.DataFrame):
+    """
+    Devuelve:
+      - df_merged por ISIN con detalles del maestro (si ISIN duplica en maestro, se toma el de menor OC)
+      - incidencias por ISIN no encontrado
+    """
+    # Si el maestro tiene múltiples filas por mismo ISIN, tomamos la de menor Ongoing Charge
+    master_isin = df_master.sort_values("Ongoing Charge", na_position="last").drop_duplicates("ISIN", keep="first")
+    merged = pd.merge(df_weights, master_isin, on="ISIN", how="left", validate="one_to_one")
+    incidencias = []
+    if merged["Family Name"].isnull().any():
+        faltan = merged[merged["Family Name"].isnull()]["ISIN"].tolist()
+        incidencias.append(("ISIN no encontrado en maestro", ", ".join(map(str, faltan))))
+        merged = merged[~merged["Family Name"].isnull()].copy()
 
-    # Formatear columnas numéricas en estilo europeo
+    # Normalizamos nombre de columna de peso para trabajar internamente como "Weight %"
+    merged.rename(columns={"Peso %": "Weight %"}, inplace=True)
+    return merged, incidencias
+
+def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
+    """
+    Para cada fila de Cartera I (que ya tiene datos completos del maestro),
+    busca en el maestro una clase con:
+      - mismo Family Name
+      - mismo Type of Share, Currency, Hedged
+      - Prospectus AF que contenga 'AI' (case-insensitive)
+      - Transferable == 'Yes'
+    De entre las candidatas, elige la de menor Ongoing Charge.
+    Mantiene el peso.
+    Devuelve (df_cartera_II, incidencias)
+    """
+    results = []
+    incidencias = []
+    for _, row in df_cartera_I.iterrows():
+        fam = row.get("Family Name")
+        tos = row.get("Type of Share")
+        cur = row.get("Currency")
+        hed = row.get("Hedged")
+        w   = row.get("Weight %", 0.0)
+
+        # Filtro base
+        candidates = df_master[
+            (df_master["Family Name"] == fam) &
+            (df_master["Type of Share"] == tos) &
+            (df_master["Currency"] == cur) &
+            (df_master["Hedged"] == hed)
+        ].copy()
+
+        if "Prospectus AF" in candidates.columns:
+            candidates["_has_ai"] = candidates["Prospectus AF"].astype(str).str.contains("AI", case=False, na=False)
+        else:
+            candidates["_has_ai"] = False
+
+        if "Transferable" in candidates.columns:
+            candidates["_tf_yes"] = (candidates["Transferable"] == "Yes")
+        else:
+            candidates["_tf_yes"] = False
+
+        candidates = candidates[candidates["_has_ai"] & candidates["_tf_yes"]].copy()
+
+        if candidates.empty:
+            incidencias.append((str(fam), "No hay clase AI + Transferable=Yes manteniendo Currency/Hedged/Type of Share"))
+            continue
+
+        # Elegimos la de menor Ongoing Charge
+        candidates = candidates.sort_values("Ongoing Charge", na_position="last")
+        best = candidates.iloc[0]
+
+        out = {
+            "Family Name":   best.get("Family Name"),
+            "Type of Share": best.get("Type of Share"),
+            "Currency":      best.get("Currency"),
+            "Hedged":        best.get("Hedged"),
+            "MiFID FH":      best.get("MiFID FH"),
+            "Min. Initial":  best.get("Min. Initial"),
+            "ISIN":          best.get("ISIN"),
+            "Prospectus AF": best.get("Prospectus AF"),
+            "Transferable":  "Yes",  # Confirmado por filtro; lo mantenemos explícitamente como "Yes"
+            "Ongoing Charge": best.get("Ongoing Charge"),
+            "Weight %":      float(w) if pd.notnull(w) else 0.0
+        }
+        results.append(out)
+
+    df_ii = pd.DataFrame(results)
+    return df_ii, incidencias
+
+def mostrar_tabla_con_formato(df_in, title):
+    st.markdown(f"#### {title}")
+    df_show = pretty_table(df_in).copy()
+    # Formateos numéricos (estilo europeo)
     for col in ["Ongoing Charge", "Weight %"]:
         if col in df_show.columns:
-            df_show[col] = df_show[col].apply(
-                lambda x: f"{x:,.4f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                if pd.notnull(x) else x
-            )
-
-    # Mostrar tabla con separador decimal europeo
+            df_show[col] = df_show[col].apply(lambda x: _format_eu_number(x, 4) if pd.notnull(x) else x)
     st.dataframe(df_show, use_container_width=True)
 
-    if cp["ter"] is not None:
-        st.metric("📊 TER medio ponderado", f"{cp['ter']:.2%}".replace(".", ","))
 
-    if st.session_state.current_errors:
-        st.subheader("⚠️ Incidencias detectadas")
-        for fam, msg in st.session_state.current_errors:
-            st.error(f"{fam}: {msg}")
+# =========================
+# 1) Subida de archivos
+# =========================
+st.subheader("Paso 1: Subir ficheros")
+master_file = st.file_uploader("📥 Sube el Excel MAESTRO (todas las clases)", type=["xlsx"], key="master")
+weights_file = st.file_uploader("📥 Sube el Excel de CARTERA (columnas 'ISIN' y 'Peso %')", type=["xlsx"], key="weights")
 
+if not master_file or not weights_file:
+    st.info("Sube ambos ficheros para continuar.")
+    st.stop()
 
-# ─── Paso 6: Comparar carteras ───
-if (
-    st.session_state.current_portfolio and
-    st.session_state.current_portfolio["ter"] is not None and
-    not st.session_state.current_errors
-):
-    st.subheader("Paso 6: Comparar carteras")
+# =========================
+# 2) Carga y validaciones
+# =========================
+try:
+    df_master_raw = pd.read_excel(master_file, skiprows=0)
+except Exception:
+    # Compatibilidad con skiprows=2 (como tu app original)
+    df_master_raw = pd.read_excel(master_file, skiprows=2)
 
-    num_saved = len(st.session_state.saved_portfolios)
+required_cols = [
+    "Family Name","Type of Share","Currency","Hedged",
+    "MiFID FH","Min. Initial","Ongoing Charge","ISIN","Prospectus AF"
+]
+missing = [c for c in required_cols if c not in df_master_raw.columns]
+if missing:
+    st.error(f"Faltan columnas en el maestro: {missing}")
+    st.stop()
 
-    if num_saved == 0:
-        st.button("Guardar para comparar", on_click=save_as_I, key="save_as_I_btn")
+has_transferable = "Transferable" in df_master_raw.columns
+if not has_transferable:
+    st.warning("El maestro no tiene columna 'Transferable'. Se asumirá vacío y no se podrá convertir a AI correctamente.")
 
-    elif num_saved == 1:
-        if st.button("Editar esta cartera (cargar Paso 3)", key="edit_import_btn"):
-            st.session_state.edit_import_to_manual = True
+df_master = _clean_master(df_master_raw)
 
-        # Sólo mostramos el botón directo de comparar si el modo es MANUAL
-        IS_MANUAL = mode.startswith("Elegir manualmente")
-        if IS_MANUAL:
-            st.button("Comparar con Cartera I", on_click=save_as_II, key="compare_with_I_btn")
+try:
+    df_weights_raw = pd.read_excel(weights_file)
+except Exception as e:
+    st.error(f"No se pudo leer la cartera: {e}")
+    st.stop()
 
-        p1 = st.session_state.saved_portfolios[0]
-        st.markdown(f"#### {p1['label']}")
-        st.metric("TER medio ponderado", f"{p1['ter']:.2%}")
-        st.dataframe(pretty_table(p1["table"]), use_container_width=True)
+if "ISIN" not in df_weights_raw.columns or "Peso %" not in df_weights_raw.columns:
+    st.error("El Excel de cartera debe incluir las columnas: 'ISIN' y 'Peso %'.")
+    st.stop()
 
-    else:
-        p1, p2 = st.session_state.saved_portfolios[0], st.session_state.saved_portfolios[1]
+df_weights = _clean_weights(df_weights_raw)
+df_weights = df_weights.groupby("ISIN", as_index=False)["Peso %"].sum()  # agrupar duplicados
 
-        st.markdown(f"#### {p1['label']}")
-        st.metric("TER medio ponderado", f"{p1['ter']:.2%}")
-        st.dataframe(pretty_table(p1["table"]), use_container_width=True)
+# =========================
+# 3) Cartera I (original) + TER
+# =========================
+st.subheader("Paso 2: Calcular Cartera I (original)")
 
-        st.markdown(f"#### {p2['label']}")
-        st.metric("TER medio ponderado", f"{p2['ter']:.2%}")
-        st.dataframe(pretty_table(p2["table"]), use_container_width=True)
+df_I_raw, incidencias_merge = merge_cartera_con_maestro(df_master, df_weights)
 
-        diff = p2["ter"] - p1["ter"]
-        st.markdown("---")
-        st.subheader("Diferencia de TER (II − I)")
-        st.metric("Diferencia", f"{diff:.2%}")
+# Mostrar suma de pesos y advertencia si no es 100
+peso_total_I = df_I_raw["Weight %"].sum() if "Weight %" in df_I_raw.columns else df_I_raw["Peso %"].sum()
+st.write(f"**Suma de pesos cartera (I):** {peso_total_I:.2f}%")
+if abs(peso_total_I - 100.0) > 1e-6:
+    st.warning("La suma de pesos no es 100%. Corrige tu Excel de cartera.")
 
-# ─── Editor tras importación: Paso 3 (prefill, EN CASCADA) ───
-if st.session_state.edit_import_to_manual and st.session_state.edited_rows:
+# TER y tabla
+ter_I = calcular_ter(df_I_raw.rename(columns={"Peso %": "Weight %"}))
+st.session_state.cartera_I = {"table": df_I_raw.rename(columns={"Peso %": "Weight %"}), "ter": ter_I}
+
+mostrar_tabla_con_formato(st.session_state.cartera_I["table"], "Tabla Cartera I (original)")
+if st.session_state.cartera_I["ter"] is not None:
+    st.metric("📊 TER Cartera I", f"{st.session_state.cartera_I['ter']:.2%}".replace(".", ","))
+
+# Incidencias de merge
+incidencias = list(incidencias_merge)
+
+# =========================
+# 4) Convertir a Cartera II (AI)
+# =========================
+st.subheader("Paso 3: Convertir a Cartera de Asesoramiento Independiente (Cartera II)")
+st.caption("Se mantiene Type of Share, Currency, Hedged; se exige Prospectus AF con 'AI' y Transferable = 'Yes'; se elige la clase con menor Ongoing Charge.")
+
+if st.button("🔁 Convertir a cartera Asesoramiento Independiente"):
+    df_II, incid_AI = convertir_a_AI(df_master, st.session_state.cartera_I["table"])
+    st.session_state.cartera_II = {"table": df_II, "ter": calcular_ter(df_II)}
+    incidencias.extend(incid_AI)
+
+# Mostrar Cartera II si existe
+if st.session_state.cartera_II and not st.session_state.cartera_II["table"].empty:
+    mostrar_tabla_con_formato(st.session_state.cartera_II["table"], "Tabla Cartera II (AI)")
+    if st.session_state.cartera_II["ter"] is not None:
+        st.metric("📊 TER Cartera II (AI)", f"{st.session_state.cartera_II['ter']:.2%}".replace(".", ","))
+
+# =========================
+# 5) Comparación I vs II
+# =========================
+st.subheader("Paso 4: Comparar Cartera I vs Cartera II")
+if st.session_state.cartera_I and st.session_state.cartera_I["ter"] is not None and \
+   st.session_state.cartera_II and st.session_state.cartera_II["ter"] is not None:
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("#### Cartera I")
+        st.metric("TER medio ponderado", f"{st.session_state.cartera_I['ter']:.2%}")
+        st.dataframe(pretty_table(st.session_state.cartera_I['table']), use_container_width=True)
+
+    with c2:
+        st.markdown("#### Cartera II (AI)")
+        st.metric("TER medio ponderado", f"{st.session_state.cartera_II['ter']:.2%}")
+        st.dataframe(pretty_table(st.session_state.cartera_II['table']), use_container_width=True)
+
+    diff = st.session_state.cartera_II["ter"] - st.session_state.cartera_I["ter"]
     st.markdown("---")
-    st.subheader("Paso 3 (edición): Personaliza la clase por fondo (a partir de la cartera importada)")
-    st.write("ℹ️ Los selectores y pesos se han precargado desde el Excel importado. Puedes cambiar la clase y guardar la Cartera II.")
+    st.subheader("Diferencia de TER (II − I)")
+    st.metric("Diferencia", f"{diff:.2%}")
 
-    families = [r["Family Name"] for r in st.session_state.edited_rows]
-    edited_from_import = []
+# =========================
+# 6) Incidencias
+# =========================
+if incidencias:
+    st.subheader("⚠️ Incidencias detectadas")
+    for fam, msg in incidencias:
+        st.error(f"{fam}: {msg}")
 
-    for idx, fam in enumerate(families):
-        base_row = st.session_state.edited_rows[idx]
-        fund_df = df[df["Family Name"] == fam].copy()
-
-        st.markdown(f"---\n#### {fam}")
-        cols = st.columns([1.5,1.1,1.1,1.2,1.2,1.0,1.5])
-        row = {"Family Name": fam}
-        context = fund_df.copy()
-
-        def cascade_prefill(i, label, key, ctx, prefill_value):
-            options = sorted(ctx[key].dropna().unique().tolist())
-            init = prefill_value if (prefill_value in options) else "NO ENCONTRADO"
-            if init == "NO ENCONTRADO":
-                options = ["NO ENCONTRADO"] + options
-            sel = cols[i].selectbox(label, options, index=options.index(init), key=f"edit_{key}_{idx}")
-            new_ctx = ctx if sel == "NO ENCONTRADO" else ctx[ctx[key] == sel]
-            return sel, new_ctx
-
-        row["Type of Share"], context = cascade_prefill(0, "Tipo de participación", "Type of Share", context, base_row.get("Type of Share"))
-        row["Currency"],     context = cascade_prefill(1, "Divisa",                 "Currency",     context, base_row.get("Currency"))
-        row["Hedged"],       context = cascade_prefill(2, "Hedged",                 "Hedged",       context, base_row.get("Hedged"))
-        row["MiFID FH"],     context = cascade_prefill(3, "MiFID FH",               "MiFID FH",     context, base_row.get("MiFID FH"))
-        row["Min. Initial"], context = cascade_prefill(4, "Mín. Inversión",         "Min. Initial", context, base_row.get("Min. Initial"))
-
-        weight_key = f"edit_weight_{idx}"
-        if weight_key not in st.session_state:
-            st.session_state[weight_key] = float(base_row.get("Weight %", 0.0))
-        row["Weight %"] = cols[5].number_input("Peso %", min_value=0.0, max_value=100.0, step=0.1, key=weight_key)
-
-        prospectus_info = "—"
-        transferable_info = "—"
-        if all(row.get(k) != "NO ENCONTRADO" for k in ["Type of Share","Currency","Hedged","MiFID FH","Min. Initial"]) and not context.empty:
-            best = context.loc[context["Ongoing Charge"].idxmin()]
-            prospectus_info  = str(best.get("Prospectus AF", "—"))
-            if has_transferable:
-                transferable_info = str(best.get("Transferable", "—"))
-        with cols[6]:
-            st.markdown(f"**Prospectus AF:** {prospectus_info}")
-            st.markdown(f"**Traspasable:** {transferable_info}")
-
-        edited_from_import.append(row)
-
-    total_weight2 = sum(r["Weight %"] for r in edited_from_import)
-    st.subheader("Peso total (edición)")
-    st.write(f"{total_weight2:.2f}%")
-    if abs(total_weight2 - 100.0) > 1e-6:
-        st.warning("El peso total debe sumar 100% antes de calcular el TER.")
-
-    st.divider()
-
-    # Botón único: calcular con la edición y guardar como Cartera II
-    if st.button("Comparar con Cartera I (guardar edición como Cartera II)", key="save_edit_as_ii_btn"):
-        # Usamos la edición RECIENTE del usuario
-        st.session_state.edited_rows = edited_from_import.copy()
-
-        results, errors = [], []
-        twc, tw = 0.0, 0.0
-
-        for row in edited_from_import:
-            if any(row.get(k) == "NO ENCONTRADO" for k in ["Type of Share","Currency","Hedged","MiFID FH","Min. Initial"]):
-                errors.append((row["Family Name"], "Selección inválida"))
-                continue
-
-            match = df[
-                (df["Family Name"] == row["Family Name"]) &
-                (df["Type of Share"] == row["Type of Share"]) &
-                (df["Currency"] == row["Currency"]) &
-                (df["Hedged"] == row["Hedged"]) &
-                (df["MiFID FH"] == row["MiFID FH"]) &
-                (df["Min. Initial"] == row["Min. Initial"])
-            ]
-            if match.empty:
-                errors.append((row["Family Name"], "No se encontró clase que coincida"))
-                continue
-
-            best = match.loc[match["Ongoing Charge"].idxmin()]
-            charge = best["Ongoing Charge"]
-            w = row["Weight %"]
-
-            twc += charge * (w/100)
-            tw  += w
-
-            out = {
-                **row,
-                "ISIN": best["ISIN"],
-                "Prospectus AF": best.get("Prospectus AF","—"),
-                "Ongoing Charge": charge
-            }
-            if has_transferable:
-                out["Transferable"] = best.get("Transferable","—")
-
-            results.append(out)
-
-        df_res = pd.DataFrame(results)
-        ter = (twc / (tw/100)) if tw > 0 else None
-
-        st.session_state.current_portfolio = {"table": df_res, "ter": ter}
-        st.session_state.current_errors = errors
-
-        if len(st.session_state.saved_portfolios) >= 1:
-            cartera_ii = {"label": "Cartera II", **st.session_state.current_portfolio}
-            ii_idx = next((i for i,p in enumerate(st.session_state.saved_portfolios) if p.get("label")=="Cartera II"), None)
-            if ii_idx is None:
-                st.session_state.saved_portfolios.append(cartera_ii)
-            else:
-                st.session_state.saved_portfolios[ii_idx] = cartera_ii
-
-        st.session_state.edit_import_to_manual = False
-        st.toast("Cartera II guardada. Abriendo comparación…", icon="✅")
-        st.rerun()
