@@ -84,7 +84,7 @@ def calcular_ter(df_rows: pd.DataFrame) -> float:
     """TER ponderado: sum(OC * w/100) / (sum(w)/100)."""
     if df_rows.empty:
         return None
-    if "Ongoing Charge" not in df_rows.columns or "Weight %"(not in df_rows.columns):
+    if "Ongoing Charge" not in df_rows.columns or "Weight %" not in df_rows.columns:
         return None
     total_w = df_rows["Weight %"].sum()
     if total_w <= 0:
