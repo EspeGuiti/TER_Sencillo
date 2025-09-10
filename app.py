@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import re
 
 # =========================
 # Configuración de página
@@ -113,18 +114,17 @@ def merge_cartera_con_maestro(df_master: pd.DataFrame, df_weights: pd.DataFrame)
 
 def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
     """
-    Para cada fila de Cartera I (que ya tiene datos completos del maestro),
-    busca en el maestro una clase con:
-      - mismo Family Name
-      - mismo Type of Share, Currency, Hedged
-      - Prospectus AF que contenga 'AI' (case-insensitive)
-      - Transferable == 'Yes'
-    De entre las candidatas, elige la de menor Ongoing Charge.
-    Mantiene el peso.
+    Mantiene Type of Share, Currency, Hedged.
+    Requiere Transferable = 'Yes'.
+    Prioridad:
+      1) Prospectus AF contiene 'AI'
+      2) Si no hay AI, Prospectus AF contiene 'T'
+    Elige la clase con menor Ongoing Charge. Mantiene los pesos.
     Devuelve (df_cartera_II, incidencias)
     """
     results = []
     incidencias = []
+
     for _, row in df_cartera_I.iterrows():
         fam = row.get("Family Name")
         tos = row.get("Type of Share")
@@ -132,7 +132,7 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
         hed = row.get("Hedged")
         w   = row.get("Weight %", 0.0)
 
-        # Filtro base
+        # Filtro base por familia y misma clase (ToS/Currency/Hedged)
         candidates = df_master[
             (df_master["Family Name"] == fam) &
             (df_master["Type of Share"] == tos) &
@@ -140,25 +140,42 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
             (df_master["Hedged"] == hed)
         ].copy()
 
-        if "Prospectus AF" in candidates.columns:
-            candidates["_has_ai"] = candidates["Prospectus AF"].astype(str).str.contains("AI", case=False, na=False)
-        else:
-            candidates["_has_ai"] = False
-
-        if "Transferable" in candidates.columns:
-            candidates["_tf_yes"] = (candidates["Transferable"] == "Yes")
-        else:
-            candidates["_tf_yes"] = False
-
-        candidates = candidates[candidates["_has_ai"] & candidates["_tf_yes"]].copy()
-
         if candidates.empty:
-            incidencias.append((str(fam), "No hay clase AI + Transferable=Yes manteniendo Currency/Hedged/Type of Share"))
+            incidencias.append((str(fam), "No hay filas en maestro con misma combinación (Type of Share/Currency/Hedged)"))
             continue
 
-        # Elegimos la de menor Ongoing Charge
-        candidates = candidates.sort_values("Ongoing Charge", na_position="last")
-        best = candidates.iloc[0]
+        # Transferable == Yes (tu limpieza normaliza a 'Yes'/'No' si usas _clean_master)
+        if "Transferable" in candidates.columns:
+            candidates = candidates[candidates["Transferable"] == "Yes"].copy()
+        else:
+            candidates = candidates.iloc[0:0].copy()
+
+        if candidates.empty:
+            incidencias.append((str(fam), "Sin candidatas transferibles con misma (Type of Share/Currency/Hedged)"))
+            continue
+
+        # ---- Prioridad 1: AI ----
+        if "Prospectus AF" in candidates.columns:
+            ai_mask = candidates["Prospectus AF"].astype(str).apply(lambda s: _has_code(s, "AI"))
+            ai_candidates = candidates[ai_mask].copy()
+        else:
+            ai_candidates = candidates.iloc[0:0].copy()
+
+        chosen = ai_candidates
+
+        # ---- Prioridad 2 (fallback): T ----
+        if chosen.empty and "Prospectus AF" in candidates.columns:
+            t_mask = candidates["Prospectus AF"].astype(str).apply(lambda s: _has_code(s, "T"))
+            t_candidates = candidates[t_mask].copy()
+            chosen = t_candidates
+
+        if chosen.empty:
+            incidencias.append((str(fam), "Sin clase AI ni T transferible con misma (Type of Share/Currency/Hedged)"))
+            continue
+
+        # Elegir menor Ongoing Charge
+        chosen = chosen.sort_values("Ongoing Charge", na_position="last")
+        best = chosen.iloc[0]
 
         out = {
             "Family Name":   best.get("Family Name"),
@@ -169,7 +186,7 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
             "Min. Initial":  best.get("Min. Initial"),
             "ISIN":          best.get("ISIN"),
             "Prospectus AF": best.get("Prospectus AF"),
-            "Transferable":  "Yes",  # Confirmado por filtro; lo mantenemos explícitamente como "Yes"
+            "Transferable":  "Yes",  # confirmado por filtro
             "Ongoing Charge": best.get("Ongoing Charge"),
             "Weight %":      float(w) if pd.notnull(w) else 0.0
         }
@@ -187,6 +204,15 @@ def mostrar_tabla_con_formato(df_in, title):
             df_show[col] = df_show[col].apply(lambda x: _format_eu_number(x, 4) if pd.notnull(x) else x)
     st.dataframe(df_show, use_container_width=True)
 
+def _has_code(s: str, code: str) -> bool:
+    """
+    Devuelve True si 'code' aparece como token en 'Prospectus AF'.
+    Ej: "I+GDC+AI+AP" → tokens ["I","GDC","AI","AP"]
+    """
+    if pd.isna(s):
+        return False
+    tokens = re.split(r'[^A-Za-z0-9]+', str(s).upper())
+    return code.upper() in tokens
 
 # =========================
 # 1) Subida de archivos
@@ -287,7 +313,7 @@ incidencias = list(incidencias_merge)
 # 4) Convertir a Cartera II (AI)
 # =========================
 st.subheader("Paso 3: Convertir a Cartera de Asesoramiento Independiente (Cartera II)")
-st.caption("Se mantiene Type of Share, Currency, Hedged; se exige Prospectus AF con 'AI' y Transferable = 'Yes'; se elige la clase con menor Ongoing Charge.")
+st.caption("Se mantiene Type of Share, Currency, Hedged; se exige Prospectus AF con 'AI' (si no hay, se usa 'T' y Transferable = 'Yes'; se elige la clase con menor Ongoing Charge.")
 
 if st.button("🔁 Convertir a cartera Asesoramiento Independiente"):
     df_II, incid_AI = convertir_a_AI(df_master, st.session_state.cartera_I["table"])
