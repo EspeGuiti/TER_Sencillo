@@ -202,11 +202,25 @@ if not master_file or not weights_file:
 # =========================
 # 2) Carga y validaciones
 # =========================
-try:
-    df_master_raw = pd.read_excel(master_file, skiprows=0)
-except Exception:
-    # Compatibilidad con skiprows=2 (como tu app original)
-    df_master_raw = pd.read_excel(master_file, skiprows=2)
+
+# Leer el Excel maestro de Allfunds (fila 1 = cabeceras reales)
+df_master_raw = pd.read_excel(master_file, header=1)
+
+# Renombrar las columnas clave al formato estándar que usa la app
+rename_map = {
+    "Family Name": "Family Name",
+    "Type of Share": "Type of Share",
+    "Currency": "Currency",
+    "Hedged": "Hedged",
+    "MiFID FH": "MiFID FH",
+    "Min. Initial": "Min. Initial",
+    "Ongoing Charge": "Ongoing Charge",
+    "ISIN": "ISIN",
+    "Prospectus AF - Prospectus details": "Prospectus AF",
+    "Prospectus AF - Independent Advice (IA)*": "Prospectus AF IA",
+    "Transferable": "Transferable"  # si aparece en tu Excel
+}
+df_master_raw.rename(columns=rename_map, inplace=True)
 
 required_cols = [
     "Family Name","Type of Share","Currency","Hedged",
