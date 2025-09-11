@@ -114,19 +114,15 @@ def merge_cartera_con_maestro(df_master: pd.DataFrame, df_weights: pd.DataFrame)
 
 def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
     """
-    Mantiene Type of Share, Currency, Hedged.
-    Requiere Transferable = 'Yes'.
+    Mantiene Type of Share, Currency, Hedged. Requiere Transferable = 'Yes'.
     Prioridad:
-      1) Clase cuyo Prospectus AF contenga 'AI'
-      2) Si no hay AI, clase cuyo Prospectus AF contenga 'T'
+      1) Prospectus AF contiene 'AI'
+      2) Si no hay AI, Prospectus AF contiene 'T' Y MiFID FH en {Clean, Clean Institucional/Institutional}
     Siempre se elige la de menor Ongoing Charge.
     Devuelve (df_cartera_II, incidencias)
     """
     results = []
     incidencias = []
-
-    # Columna opcional de Allfunds que a veces viene para IA
-    has_ia_col = "Prospectus AF - Independent Advice (IA)*" in df_master.columns
 
     for _, row in df_cartera_I.iterrows():
         fam = row.get("Family Name")
@@ -157,32 +153,28 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
             incidencias.append((str(fam), "Sin candidatas transferibles con misma (Type of Share/Currency/Hedged)"))
             continue
 
-        # 3) Prioridad AI
-        ai_mask_text = candidates.get("Prospectus AF", pd.Series(index=candidates.index, dtype=object)) \
-                                  .astype(str).apply(lambda s: _has_code(s, "AI"))
-        if has_ia_col:
-            # si existe la columna específica de IA, la usamos como OR
-            ai_mask_flag = candidates["Prospectus AF - Independent Advice (IA)*"].astype(str).str.strip().str.lower().isin(
-                {"yes","y","si","sí","true","1"}
-            )
+        # ---- Prioridad 1: AI ----
+        if "Prospectus AF" in candidates.columns:
+            ai_mask = candidates["Prospectus AF"].astype(str).apply(lambda s: _has_code(s, "AI"))
+            ai_candidates = candidates[ai_mask].copy()
         else:
-            ai_mask_flag = pd.Series(False, index=candidates.index)
+            ai_candidates = candidates.iloc[0:0].copy()
 
-        ai_candidates = candidates[ai_mask_text | ai_mask_flag].copy()
         chosen = ai_candidates
 
-        # 4) Fallback T (si no hay AI)
-        if chosen.empty:
-            t_mask = candidates.get("Prospectus AF", pd.Series(index=candidates.index, dtype=object)) \
-                               .astype(str).apply(lambda s: _has_code(s, "T"))
-            t_candidates = candidates[t_mask].copy()
-            chosen = t_candidates
+        # ---- Prioridad 2 (fallback): T + MiFID FH 'Clean'/'Clean Institucional/Institutional' ----
+        if chosen.empty and "Prospectus AF" in candidates.columns and "MiFID FH" in candidates.columns:
+            t_mask = candidates["Prospectus AF"].astype(str).apply(lambda s: _has_code(s, "T"))
+            mifid_norm = candidates["MiFID FH"].astype(str).str.strip().str.lower()
+            clean_mask = mifid_norm.isin({"clean", "clean institucional", "clean institutional"})
+            t_clean_candidates = candidates[t_mask & clean_mask].copy()
+            chosen = t_clean_candidates
 
         if chosen.empty:
-            incidencias.append((str(fam), "Sin clase AI ni T transferible con misma (Type of Share/Currency/Hedged)"))
+            incidencias.append((str(fam), "Sin clase AI ni (T con MiFID FH Clean) transferible con misma (Type of Share/Currency/Hedged)"))
             continue
 
-        # 5) Elegir menor Ongoing Charge
+        # 3) Elegir menor Ongoing Charge
         chosen = chosen.sort_values("Ongoing Charge", na_position="last")
         best = chosen.iloc[0]
 
@@ -202,7 +194,7 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
 
     df_ii = pd.DataFrame(results)
     return df_ii, incidencias
-
+    
 def mostrar_tabla_con_formato(df_in, title):
     st.markdown(f"#### {title}")
     df_show = pretty_table(df_in).copy()
