@@ -313,10 +313,14 @@ incidencias = list(incidencias_merge)
 # 4) Convertir a Cartera II (AI)
 # =========================
 st.subheader("Paso 3: Convertir a Cartera de Asesoramiento Independiente (Cartera II)")
-    st.caption("Se mantiene Type of Share, Currency, Hedged; Transferable = 'Yes'. Prioridad: 'AI' en Prospectus AF; si no hay, 'T' con MiFID FH = Clean/Clean Institucional. Siempre se elige la menor Ongoing Charge.")
+st.caption(
+    "Se mantiene Type of Share, Currency, Hedged; Transferable = 'Yes'. "
+    "Prioridad: 'AI' en Prospectus AF; si no hay, 'T' con MiFID FH = Clean/Clean Institucional. "
+    "Siempre se elige la menor Ongoing Charge."
+)
 
 if st.button("🔁 Convertir a cartera Asesoramiento Independiente"):
-    df_II, incid_AI = convertir_a_AI(df_master, st.session_state.cartera_I["table"])
+    df_II, incid_AI = convertir_a_AI(df_master, st.session_state.cartera_I['table'])
     st.session_state.cartera_II = {"table": df_II, "ter": calcular_ter(df_II)}
     incidencias.extend(incid_AI)
 
