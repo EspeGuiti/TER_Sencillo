@@ -289,18 +289,28 @@ if not has_transferable:
 
 df_master = _clean_master(df_master_raw)
 
+# --- Cargar el Excel de CARTERA (nuevo formato) ---
 try:
-    df_weights_raw = pd.read_excel(weights_file)
+    # Fila 6 como cabeceras (header=5) y solo las columnas necesarias
+    df_weights_raw = pd.read_excel(
+        weights_file,
+        header=5,
+        usecols=["ISIN", "TOTAL INVERSIÓN"]
+    )
 except Exception as e:
     st.error(f"No se pudo leer la cartera: {e}")
     st.stop()
 
-if "ISIN" not in df_weights_raw.columns or "Peso %" not in df_weights_raw.columns:
-    st.error("El Excel de cartera debe incluir las columnas: 'ISIN' y 'Peso %'.")
-    st.stop()
+# El archivo trae una última fila de totales (100) sin ISIN -> eliminarla
+df_weights_raw = df_weights_raw[df_weights_raw["ISIN"].notna()].copy()
 
+# Renombrar a la columna esperada por el resto de la app
+df_weights_raw.rename(columns={"TOTAL INVERSIÓN": "Peso %"}, inplace=True)
+
+# Normalizar porcentajes y agrupar ISIN duplicados
 df_weights = _clean_weights(df_weights_raw)
-df_weights = df_weights.groupby("ISIN", as_index=False)["Peso %"].sum()  # agrupar duplicados
+df_weights = df_weights.groupby("ISIN", as_index=False)["Peso %"].sum()
+
 
 # =========================
 # 3) Cartera I (original) + TER
