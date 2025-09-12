@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import re
+import unicodedata
 
 # =========================
 # Configuración de página
@@ -257,6 +258,23 @@ def _fmt_ratio_eu_percent(x, decimals=2):
     if x is None:
         return "-"
     return f"{x:.{decimals}%}".replace(".", ",")
+def _norm_txt(s):
+    if pd.isna(s):
+        return ""
+    s = str(s).strip()
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    return s.lower()
+
+def _find_header_cell(df_any, targets):
+    """
+    Busca la primera celda cuyo texto normalizado está en 'targets'.
+    Devuelve (row_idx, col_idx) o (None, None) si no encuentra.
+    """
+    for r in range(df_any.shape[0]):
+        for c in range(df_any.shape[1]):
+            if _norm_txt(df_any.iat[r, c]) in targets:
+                return r, c
+    return None, None
 
 # =========================
 # 1) Subida de archivos
@@ -316,26 +334,40 @@ if not has_transferable:
 
 df_master = _clean_master(df_master_raw)
 
-# --- Cargar el Excel de CARTERA (nuevo formato) ---
+# --- Cargar el Excel de CARTERA (auto-descubrimiento ISIN / TOTAL INVERSIÓN) ---
 try:
-    # Fila 6 como cabeceras (header=5) y solo las columnas necesarias
-    df_weights_raw = pd.read_excel(
-        weights_file,
-        header=5,
-        usecols=["ISIN", "TOTAL INVERSIÓN"]
-    )
+    df_any = pd.read_excel(weights_file, header=None)
 except Exception as e:
     st.error(f"No se pudo leer la cartera: {e}")
     st.stop()
 
-# El archivo trae una última fila de totales (100) sin ISIN -> eliminarla
+targets_isin   = {"isin"}
+targets_weight = {"total inversion", "total inversion."}  # admite variantes normalizadas
+
+r_isin, c_isin = _find_header_cell(df_any, targets_isin)
+r_wgt,  c_wgt  = _find_header_cell(df_any, targets_weight)
+
+if r_isin is None or r_wgt is None:
+    st.error("No se han encontrado las cabeceras 'ISIN' y/o 'TOTAL INVERSIÓN'.")
+    st.stop()
+
+# Leer hacia abajo desde cada cabecera
+col_isin_vals = df_any.iloc[r_isin+1:, c_isin].reset_index(drop=True)
+col_wgt_vals  = df_any.iloc[r_wgt+1:,  c_wgt].reset_index(drop=True)
+
+# Emparejar por índice y construir df_weights_raw
+max_len = max(len(col_isin_vals), len(col_wgt_vals))
+col_isin_vals = col_isin_vals.reindex(range(max_len))
+col_wgt_vals  = col_wgt_vals.reindex(range(max_len))
+df_weights_raw = pd.DataFrame({"ISIN": col_isin_vals, "Peso %": col_wgt_vals})
+
+# Quitar filas vacías y excluir el total (100) sin ISIN
+df_weights_raw.dropna(how="all", inplace=True)
 df_weights_raw = df_weights_raw[df_weights_raw["ISIN"].notna()].copy()
 
-# Renombrar a la columna esperada por el resto de la app
-df_weights_raw.rename(columns={"TOTAL INVERSIÓN": "Peso %"}, inplace=True)
-
-# Normalizar porcentajes y agrupar ISIN duplicados
+# Normalizar y agrupar duplicados
 df_weights = _clean_weights(df_weights_raw)
+df_weights["ISIN"] = df_weights["ISIN"].astype(str).str.strip().str.upper()
 df_weights = df_weights.groupby("ISIN", as_index=False)["Peso %"].sum()
 
 
