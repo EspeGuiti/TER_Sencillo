@@ -246,15 +246,20 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
 def mostrar_tabla_con_formato(df_in, title):
     st.markdown(f"#### {title}")
     df_show = pretty_table(df_in).copy()
-    # Formateo europeo
+
+    # Forzar representación como TEXTO con coma europea
     if "Ongoing Charge" in df_show.columns:
         df_show["Ongoing Charge"] = df_show["Ongoing Charge"].apply(
-            lambda x: _format_eu_number(x, 4) if pd.notnull(x) else x
-        )
+            lambda v: _format_eu_number(float(v), 4) if pd.notnull(v) else ""
+        ).astype(str)
+
     if "Weight %" in df_show.columns:
         df_show["Weight %"] = df_show["Weight %"].apply(
-            lambda x: _format_eu_number(x, 2) if pd.notnull(x) else x
-        )
+            lambda v: _format_eu_number(float(v), 2) if pd.notnull(v) else ""
+        ).astype(str)
+        # Si quieres ver el símbolo % en tabla, usa esta línea en su lugar:
+        # df_show["Weight %"] = df_show["Weight %"].apply(lambda s: f"{s}%" if s != "" else "")
+
     st.dataframe(df_show, use_container_width=True)
 
 def _has_code(s: str, code: str) -> bool:
