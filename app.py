@@ -65,21 +65,37 @@ def _format_eu_number(x, decimals=4):
     return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 def pretty_table(df_in: pd.DataFrame) -> pd.DataFrame:
-    """Reordena y renombra columnas para la visualización."""
+    """
+    Devuelve SOLO las columnas pedidas del maestro + 'Weight %'.
+    'MIFID FH' se muestra con ese nombre (mapeando desde 'MiFID FH' del maestro).
+    """
     tbl = df_in.copy()
-    # Unificar "Transferable" -> "Traspasable" para mostrar
-    if "Traspasable" not in tbl.columns and "Transferable" in tbl.columns:
-        tbl.rename(columns={"Transferable": "Traspasable"}, inplace=True)
 
-    desired = [
-        "Family Name",
-        "Type of Share", "Currency", "Hedged", "MiFID FH", "Min. Initial",
-        "ISIN", "Prospectus AF", "Traspasable",
-        "Ongoing Charge", "Weight %"
+    # Normalizar mayúsculas del MiFID FH (en maestro suele ser 'MiFID FH')
+    if "MiFID FH" in tbl.columns and "MIFID FH" not in tbl.columns:
+        tbl.rename(columns={"MiFID FH": "MIFID FH"}, inplace=True)
+
+    wanted = [
+        "ISIN",
+        "Name",
+        "Type of Share",
+        "Currency",
+        "Hedged",
+        "Ongoing Charge",
+        "Min. Initial",
+        "MIFID FH",
+        "MiFID EMT",
+        "Prospectus AF",
+        "Weight %",          # ⬅️ añadido (y se mantiene en todas las tablas)
     ]
-    existing = [c for c in desired if c in tbl.columns]
-    rest = [c for c in tbl.columns if c not in existing]
-    return tbl[existing + rest]
+
+    # Crear columnas vacías si faltan (por ejemplo, si 'MiFID EMT' no existe en tu maestro)
+    for c in wanted:
+        if c not in tbl.columns:
+            tbl[c] = np.nan
+
+    # Orden y solo las deseadas
+    return tbl[wanted]
 
 def calcular_ter(df_rows: pd.DataFrame) -> float:
     """TER ponderado: sum(OC * w/100) / (sum(w)/100)."""
@@ -215,10 +231,15 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
 def mostrar_tabla_con_formato(df_in, title):
     st.markdown(f"#### {title}")
     df_show = pretty_table(df_in).copy()
-    # Formateos numéricos (estilo europeo)
-    for col in ["Ongoing Charge", "Weight %"]:
-        if col in df_show.columns:
-            df_show[col] = df_show[col].apply(lambda x: _format_eu_number(x, 4) if pd.notnull(x) else x)
+    # Formateo europeo
+    if "Ongoing Charge" in df_show.columns:
+        df_show["Ongoing Charge"] = df_show["Ongoing Charge"].apply(
+            lambda x: _format_eu_number(x, 4) if pd.notnull(x) else x
+        )
+    if "Weight %" in df_show.columns:
+        df_show["Weight %"] = df_show["Weight %"].apply(
+            lambda x: _format_eu_number(x, 2) if pd.notnull(x) else x
+        )
     st.dataframe(df_show, use_container_width=True)
 
 def _has_code(s: str, code: str) -> bool:
@@ -230,6 +251,12 @@ def _has_code(s: str, code: str) -> bool:
         return False
     tokens = re.split(r'[^A-Za-z0-9]+', str(s).upper())
     return code.upper() in tokens
+
+def _fmt_ratio_eu_percent(x, decimals=2):
+    """Formatea un ratio (p.ej. 0.0123) como % europeo '1,23%'. """
+    if x is None:
+        return "-"
+    return f"{x:.{decimals}%}".replace(".", ",")
 
 # =========================
 # 1) Subida de archivos
@@ -321,7 +348,7 @@ df_I_raw, incidencias_merge = merge_cartera_con_maestro(df_master, df_weights)
 
 # Mostrar suma de pesos y advertencia si no es 100
 peso_total_I = df_I_raw["Weight %"].sum() if "Weight %" in df_I_raw.columns else df_I_raw["Peso %"].sum()
-st.write(f"**Suma de pesos cartera (I):** {peso_total_I:.2f}%")
+st.write(f"**Suma de pesos cartera (I):** {_format_eu_number(peso_total_I, 2)}%")
 if abs(peso_total_I - 100.0) > 1e-6:
     st.warning("La suma de pesos no es 100%. Corrige tu Excel de cartera.")
 
@@ -331,7 +358,7 @@ st.session_state.cartera_I = {"table": df_I_raw.rename(columns={"Peso %": "Weigh
 
 mostrar_tabla_con_formato(st.session_state.cartera_I["table"], "Tabla Cartera I (original)")
 if st.session_state.cartera_I["ter"] is not None:
-    st.metric("📊 TER Cartera I", f"{st.session_state.cartera_I['ter']:.2%}".replace(".", ","))
+    st.metric("📊 TER Cartera I", _fmt_ratio_eu_percent(st.session_state.cartera_I["ter"], 2))
 
 # Incidencias de merge
 incidencias = list(incidencias_merge)
@@ -355,8 +382,8 @@ if st.button("🔁 Convertir a cartera Asesoramiento Independiente"):
 if st.session_state.cartera_II and not st.session_state.cartera_II["table"].empty:
     mostrar_tabla_con_formato(st.session_state.cartera_II["table"], "Tabla Cartera II (AI)")
     if st.session_state.cartera_II["ter"] is not None:
-        st.metric("📊 TER Cartera II (AI)", f"{st.session_state.cartera_II['ter']:.2%}".replace(".", ","))
-
+        st.metric("📊 TER Cartera II (AI)", _fmt_ratio_eu_percent(st.session_state.cartera_II["ter"], 2))
+        
 # =========================
 # 5) Comparación I vs II
 # =========================
@@ -378,7 +405,7 @@ if st.session_state.cartera_I and st.session_state.cartera_I["ter"] is not None 
     diff = st.session_state.cartera_II["ter"] - st.session_state.cartera_I["ter"]
     st.markdown("---")
     st.subheader("Diferencia de TER (II − I)")
-    st.metric("Diferencia", f"{diff:.2%}")
+    st.metric("Diferencia", _fmt_ratio_eu_percent(diff, 2))
 
 # =========================
 # 6) Incidencias
