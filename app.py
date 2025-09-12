@@ -212,20 +212,34 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
         # 6) Elegir menor Ongoing Charge
         chosen = chosen.sort_values("Ongoing Charge", na_position="last")
         best = chosen.iloc[0]
-
-        results.append({
+        
+        # Tomar Name y MiFID EMT del maestro (con fallbacks razonables)
+        name_val = best.get("Name")
+        if pd.isna(name_val) or name_val in ("", None):
+            # Por si el maestro usa otros encabezados
+            name_val = best.get("Share Class Name") or best.get("Fund Name") or best.get("Family Name")
+        
+        emt_val = best.get("MiFID EMT")
+        if pd.isna(emt_val) or emt_val in ("", None):
+            # Por si viene con otra capitalización
+            emt_val = best.get("MIFID EMT")
+        
+        out = {
             "Family Name":   best.get("Family Name"),
+            "Name":          name_val,                 # ← añadido
             "Type of Share": best.get("Type of Share"),
             "Currency":      best.get("Currency"),
             "Hedged":        best.get("Hedged"),
             "MiFID FH":      best.get("MiFID FH"),
+            "MiFID EMT":     emt_val,                  # ← añadido
             "Min. Initial":  best.get("Min. Initial"),
             "ISIN":          best.get("ISIN"),
             "Prospectus AF": best.get("Prospectus AF"),
             "Transferable":  "Yes",  # confirmado por filtro
             "Ongoing Charge": best.get("Ongoing Charge"),
             "Weight %":      float(w) if pd.notnull(w) else 0.0
-        })
+        }
+        results.append(out)
 
     return pd.DataFrame(results), incidencias
     
