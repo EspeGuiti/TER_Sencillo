@@ -131,19 +131,21 @@ def merge_cartera_con_maestro(df_master: pd.DataFrame, df_weights: pd.DataFrame)
 
 def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
     """
-    Mantiene Type of Share, Currency, Hedged.
-    Requiere: Transferable = 'Yes' y MiFID FH ∈ {Clean, Clean Institucional/Institutional}.
-    Prioridad:
-      1) Clase cuyo Prospectus AF contenga 'AI'
-      2) Si no hay AI, clase cuyo Prospectus AF contenga 'T'
-    Siempre se elige la de menor Ongoing Charge.
-    Devuelve (df_cartera_II, incidencias)
+    Genera Cartera II con el MISMO ORDEN y MISMO Nº de filas que Cartera I.
+    Reglas:
+      - Matching por misma (Family Name, Type of Share, Currency, Hedged)
+      - Transferable = 'Yes'
+      - MiFID FH ∈ {Clean, Clean Institucional/Institutional}
+      - Prioridad: Prospectus AF contiene 'AI'; si no, 'T'
+      - Elegir menor Ongoing Charge
+    Si no hay candidata, devuelve una fila placeholder:
+      Name = Family Name de I, resto de campos en blanco, Weight % igual que I.
     """
     results = []
     incidencias = []
 
-    # Columna opcional que a veces trae Allfunds para IA
     has_ia_col = "Prospectus AF - Independent Advice (IA)*" in df_master.columns
+    clean_set = {"clean", "clean institucional", "clean institutional"}
 
     for _, row in df_cartera_I.iterrows():
         fam = row.get("Family Name")
@@ -152,95 +154,91 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
         hed = row.get("Hedged")
         w   = row.get("Weight %", 0.0)
 
-        # 1) Coincidencia base por familia/clase
-        candidates = df_master[
+        # 1) Candidatas base: misma familia y misma clase (ToS/Currency/Hedged)
+        base = df_master[
             (df_master["Family Name"] == fam) &
             (df_master["Type of Share"] == tos) &
             (df_master["Currency"] == cur) &
             (df_master["Hedged"] == hed)
         ].copy()
 
-        if candidates.empty:
-            incidencias.append((str(fam), "No hay filas en maestro con misma combinación (Type of Share/Currency/Hedged)"))
-            continue
-
         # 2) Transferible = Yes
-        if "Transferable" in candidates.columns:
-            candidates = candidates[candidates["Transferable"] == "Yes"].copy()
+        if "Transferable" in base.columns:
+            base = base[base["Transferable"] == "Yes"].copy()
         else:
-            candidates = candidates.iloc[0:0].copy()
+            base = base.iloc[0:0].copy()
 
-        if candidates.empty:
-            incidencias.append((str(fam), "Sin candidatas transferibles con misma (Type of Share/Currency/Hedged)"))
-            continue
-
-        # 3) MiFID FH debe ser Clean / Clean Institucional / Clean Institutional (normalizado)
-        if "MiFID FH" in candidates.columns:
-            mifid_norm = candidates["MiFID FH"].astype(str).str.strip().str.lower()
-            clean_ok = mifid_norm.isin({"clean", "clean institucional", "clean institutional"})
-            candidates = candidates[clean_ok].copy()
+        # 3) MiFID FH Clean
+        if "MiFID FH" in base.columns:
+            mifid_norm = base["MiFID FH"].astype(str).str.strip().str.lower()
+            base = base[mifid_norm.isin(clean_set)].copy()
         else:
-            candidates = candidates.iloc[0:0].copy()
+            base = base.iloc[0:0].copy()
 
-        if candidates.empty:
-            incidencias.append((str(fam), "Sin candidatas con MiFID FH = Clean/Clean Institucional"))
-            continue
-
-        # 4) Prioridad AI (texto en Prospectus AF o flag IA si existe)
-        if "Prospectus AF" in candidates.columns:
-            ai_mask_text = candidates["Prospectus AF"].astype(str).apply(lambda s: _has_code(s, "AI"))
+        # 4) Prioridad AI (texto o flag IA si existe)
+        if "Prospectus AF" in base.columns:
+            ai_mask_text = base["Prospectus AF"].astype(str).apply(lambda s: _has_code(s, "AI"))
         else:
-            ai_mask_text = pd.Series(False, index=candidates.index)
+            ai_mask_text = pd.Series(False, index=base.index)
 
         if has_ia_col:
-            ai_mask_flag = candidates["Prospectus AF - Independent Advice (IA)*"] \
-                               .astype(str).str.strip().str.lower().isin({"yes", "y", "si", "sí", "true", "1"})
+            ai_mask_flag = base["Prospectus AF - Independent Advice (IA)*"] \
+                               .astype(str).str.strip().str.lower().isin({"yes","y","si","sí","true","1"})
         else:
-            ai_mask_flag = pd.Series(False, index=candidates.index)
+            ai_mask_flag = pd.Series(False, index=base.index)
 
-        chosen = candidates[ai_mask_text | ai_mask_flag].copy()
+        chosen = base[ai_mask_text | ai_mask_flag].copy()
 
-        # 5) Fallback T si no hay AI
-        if chosen.empty and "Prospectus AF" in candidates.columns:
-            t_mask = candidates["Prospectus AF"].astype(str).apply(lambda s: _has_code(s, "T"))
-            chosen = candidates[t_mask].copy()
+        # 5) Fallback T
+        if chosen.empty and "Prospectus AF" in base.columns:
+            t_mask = base["Prospectus AF"].astype(str).apply(lambda s: _has_code(s, "T"))
+            chosen = base[t_mask].copy()
 
+        # 6) Si no hay ninguna, devolver placeholder manteniendo el orden y el peso
         if chosen.empty:
-            incidencias.append((str(fam), "Sin clase AI ni T (con MiFID FH Clean) transferible con misma (Type of Share/Currency/Hedged)"))
+            incidencias.append((str(fam), "Sin clase AI ni T (Clean) transferible con misma (Type of Share/Currency/Hedged)"))
+            results.append({
+                "Family Name":   fam,
+                "Name":          fam,         # ← mostrar Family Name en columna Name
+                "Type of Share": "",
+                "Currency":      "",
+                "Hedged":        "",
+                "MiFID FH":      "",
+                "MiFID EMT":     "",
+                "Min. Initial":  "",
+                "ISIN":          "",
+                "Prospectus AF": "",
+                "Transferable":  "",
+                "Ongoing Charge": np.nan,     # ← NaN para que no falle el formateo/TER
+                "Weight %":      float(w) if pd.notnull(w) else 0.0
+            })
             continue
 
-        # 6) Elegir menor Ongoing Charge
+        # 7) Elegir menor Ongoing Charge
         chosen = chosen.sort_values("Ongoing Charge", na_position="last")
         best = chosen.iloc[0]
-        
-        # Tomar Name y MiFID EMT del maestro (con fallbacks razonables)
-        name_val = best.get("Name")
-        if pd.isna(name_val) or name_val in ("", None):
-            # Por si el maestro usa otros encabezados
-            name_val = best.get("Share Class Name") or best.get("Fund Name") or best.get("Family Name")
-        
-        emt_val = best.get("MiFID EMT")
-        if pd.isna(emt_val) or emt_val in ("", None):
-            # Por si viene con otra capitalización
-            emt_val = best.get("MIFID EMT")
-        
-        out = {
+
+        # 8) Completar campos (con pequeños fallbacks)
+        name_val = best.get("Name") or best.get("Share Class Name") or best.get("Fund Name") or best.get("Family Name")
+        emt_val  = best.get("MiFID EMT") or best.get("MIFID EMT")
+
+        results.append({
             "Family Name":   best.get("Family Name"),
-            "Name":          name_val,                 # ← añadido
+            "Name":          name_val,
             "Type of Share": best.get("Type of Share"),
             "Currency":      best.get("Currency"),
             "Hedged":        best.get("Hedged"),
             "MiFID FH":      best.get("MiFID FH"),
-            "MiFID EMT":     emt_val,                  # ← añadido
+            "MiFID EMT":     emt_val,
             "Min. Initial":  best.get("Min. Initial"),
             "ISIN":          best.get("ISIN"),
             "Prospectus AF": best.get("Prospectus AF"),
-            "Transferable":  "Yes",  # confirmado por filtro
+            "Transferable":  "Yes",
             "Ongoing Charge": best.get("Ongoing Charge"),
             "Weight %":      float(w) if pd.notnull(w) else 0.0
-        }
-        results.append(out)
+        })
 
+    # IMPORTANTe: NO reordenar results -> respeta el orden de Cartera I
     return pd.DataFrame(results), incidencias
     
 def mostrar_tabla_con_formato(df_in, title):
@@ -439,20 +437,22 @@ if st.session_state.cartera_II and not st.session_state.cartera_II["table"].empt
 # 5) Comparación I vs II
 # =========================
 st.subheader("Paso 4: Comparar Cartera I vs Cartera II")
-if st.session_state.cartera_I and st.session_state.cartera_I["ter"] is not None and \
-   st.session_state.cartera_II and st.session_state.cartera_II["ter"] is not None:
+if (
+    st.session_state.cartera_I and st.session_state.cartera_I["ter"] is not None and
+    st.session_state.cartera_II and st.session_state.cartera_II["ter"] is not None
+):
 
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("#### Cartera I")
-        st.metric("TER medio ponderado", f"{st.session_state.cartera_I['ter']:.2%}")
-        st.dataframe(pretty_table(st.session_state.cartera_I['table']), use_container_width=True)
+        st.metric("TER medio ponderado", _fmt_ratio_eu_percent(st.session_state.cartera_I["ter"], 2))
+        mostrar_tabla_con_formato(st.session_state.cartera_I["table"], "Tabla Cartera I")
 
     with c2:
         st.markdown("#### Cartera II (AI)")
-        st.metric("TER medio ponderado", f"{st.session_state.cartera_II['ter']:.2%}")
-        st.dataframe(pretty_table(st.session_state.cartera_II['table']), use_container_width=True)
-
+        st.metric("TER medio ponderado", _fmt_ratio_eu_percent(st.session_state.cartera_II["ter"], 2))
+        mostrar_tabla_con_formato(st.session_state.cartera_II["table"], "Tabla Cartera II (AI)")
+        
     diff = st.session_state.cartera_II["ter"] - st.session_state.cartera_I["ter"]
     st.markdown("---")
     st.subheader("Diferencia de TER (II − I)")
