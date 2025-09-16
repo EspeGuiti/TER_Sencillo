@@ -443,7 +443,7 @@ if st.session_state.cartera_II and not st.session_state.cartera_II["table"].empt
     mostrar_tabla_con_formato(st.session_state.cartera_II["table"], "Tabla Cartera II (AI)")
     if st.session_state.cartera_II["ter"] is not None:
         st.metric("📊 TER Cartera II (AI)", _fmt_ratio_eu_percent(st.session_state.cartera_II["ter"], 2))
-        
+     
 # =========================
 # 5) Comparación I vs II
 # =========================
@@ -459,11 +459,11 @@ if (
         st.metric("TER medio ponderado", _fmt_ratio_eu_percent(st.session_state.cartera_I["ter"], 2))
         mostrar_tabla_con_formato(st.session_state.cartera_I["table"], "Tabla Cartera I")
 
+
     with c2:
         st.markdown("#### Cartera II (AI)")
         st.metric("TER medio ponderado", _fmt_ratio_eu_percent(st.session_state.cartera_II["ter"], 2))
-        mostrar_tabla_con_formato(st.session_state.cartera_II["table"], "Tabla Cartera II (AI)")
-        
+        mostrar_tabla_con_formato(st.session_state.cartera_II["table"], "Tabla Cartera II (AI)")    
     diff = st.session_state.cartera_II["ter"] - st.session_state.cartera_I["ter"]
     st.markdown("---")
     st.subheader("Diferencia de TER (II − I)")
