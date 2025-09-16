@@ -245,18 +245,29 @@ def mostrar_tabla_con_formato(df_in, title):
     st.markdown(f"#### {title}")
     df_show = pretty_table(df_in).copy()
 
-    # Forzar representación como TEXTO con coma europea
+    # Formateo europeo -> convertir a TEXTO con coma decimal
+    def _fmt_eu(v, dec):
+        if pd.isna(v):
+            return ""
+        try:
+            # aceptar '1,23', '1.23', '1,23%', etc.
+            x = float(str(v).replace("%", "").replace(",", "."))
+        except Exception:
+            return str(v)
+        s = f"{x:,.{dec}f}"
+        return s.replace(",", "X").replace(".", ",").replace("X", ".")
+
     if "Ongoing Charge" in df_show.columns:
-        df_show["Ongoing Charge"] = df_show["Ongoing Charge"].apply(
-            lambda v: _format_eu_number(float(v), 4) if pd.notnull(v) else ""
-        ).astype(str)
+        df_show["Ongoing Charge"] = df_show["Ongoing Charge"] \
+            .apply(lambda v: _fmt_eu(v, 4)) \
+            .astype(str)
 
     if "Weight %" in df_show.columns:
-        df_show["Weight %"] = df_show["Weight %"].apply(
-            lambda v: _format_eu_number(float(v), 2) if pd.notnull(v) else ""
-        ).astype(str)
-        # Si quieres ver el símbolo % en tabla, usa esta línea en su lugar:
-        # df_show["Weight %"] = df_show["Weight %"].apply(lambda s: f"{s}%" if s != "" else "")
+        df_show["Weight %"] = df_show["Weight %"] \
+            .apply(lambda v: _fmt_eu(v, 2)) \
+            .astype(str)
+        # Si quieres enseñar el símbolo % en tabla, usa:
+        # df_show["Weight %"] = df_show["Weight %"].apply(lambda s: f"{s}%" if s else s)
 
     st.dataframe(df_show, use_container_width=True)
 
