@@ -137,6 +137,7 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
       - Transferable = 'Yes'
       - MiFID FH ∈ {Clean, Clean Institucional/Institutional}
       - Prioridad: Prospectus AF contiene 'AI'; si no, 'T'
+      - Si ninguna candidata, buscar en el mismo Family Name una clase cuyo Name contenga "cartera"
       - Elegir menor Ongoing Charge
     Si no hay candidata, devuelve una fila placeholder:
       Name = Family Name de I, resto de campos en blanco, Weight % igual que I.
@@ -194,9 +195,42 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
             t_mask = base["Prospectus AF"].astype(str).apply(lambda s: _has_code(s, "T"))
             chosen = base[t_mask].copy()
 
-        # 6) Si no hay ninguna, devolver placeholder manteniendo el orden y el peso
+        # 6) Nuevo fallback: buscar en el mismo Family Name una clase cuyo Name contenga "cartera"
+        found_cartera = False
         if chosen.empty:
-            incidencias.append((str(fam), "Sin clase AI ni T (Clean) transferible con misma (Type of Share/Currency/Hedged)"))
+            cartera_candidates = df_master[
+                (df_master["Family Name"] == fam) &
+                (df_master["Name"].astype(str).str.lower().str.contains("cartera", na=False))
+            ].copy()
+            if not cartera_candidates.empty:
+                cartera_candidates = cartera_candidates.sort_values("Ongoing Charge", na_position="last")
+                best = cartera_candidates.iloc[0]
+                found_cartera = True
+                # Completar campos (con pequeños fallbacks)
+                name_val = best.get("Name") or best.get("Share Class Name") or best.get("Fund Name") or best.get("Family Name")
+                emt_val  = best.get("MiFID EMT") or best.get("MIFID EMT")
+                results.append({
+                    "Family Name":   best.get("Family Name"),
+                    "Name":          name_val,
+                    "Type of Share": best.get("Type of Share"),
+                    "Currency":      best.get("Currency"),
+                    "Hedged":        best.get("Hedged"),
+                    "MiFID FH":      best.get("MiFID FH"),
+                    "MiFID EMT":     emt_val,
+                    "Min. Initial":  best.get("Min. Initial"),
+                    "ISIN":          best.get("ISIN"),
+                    "Prospectus AF": best.get("Prospectus AF"),
+                    "Transferable":  best.get("Transferable") if "Transferable" in best else "",
+                    "Ongoing Charge": best.get("Ongoing Charge"),
+                    "Weight %":      float(w) if pd.notnull(w) else 0.0
+                })
+                incidencias.append((str(fam), "No se encontró clase AI/T transferible, se asignó clase con 'cartera' en el nombre"))
+        if found_cartera:
+            continue
+
+        # 7) Si no hay ninguna, devolver placeholder manteniendo el orden y el peso
+        if chosen.empty:
+            incidencias.append((str(fam), "Sin clase AI ni T (Clean) transferible con misma (Type of Share/Currency/Hedged) ni clase 'cartera'"))
             results.append({
                 "Family Name":   fam,
                 "Name":          fam,         # ← mostrar Family Name en columna Name
@@ -214,11 +248,11 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
             })
             continue
 
-        # 7) Elegir menor Ongoing Charge
+        # 8) Elegir menor Ongoing Charge
         chosen = chosen.sort_values("Ongoing Charge", na_position="last")
         best = chosen.iloc[0]
 
-        # 8) Completar campos (con pequeños fallbacks)
+        # 9) Completar campos (con pequeños fallbacks)
         name_val = best.get("Name") or best.get("Share Class Name") or best.get("Fund Name") or best.get("Family Name")
         emt_val  = best.get("MiFID EMT") or best.get("MIFID EMT")
 
@@ -238,7 +272,7 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
             "Weight %":      float(w) if pd.notnull(w) else 0.0
         })
 
-    # IMPORTANTe: NO reordenar results -> respeta el orden de Cartera I
+    # IMPORTANTE: NO reordenar results -> respeta el orden de Cartera I
     return pd.DataFrame(results), incidencias
     
 def mostrar_tabla_con_formato(df_in, title):
