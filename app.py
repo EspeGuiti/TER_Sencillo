@@ -342,7 +342,7 @@ def _find_header_cell(df_any, targets):
 # 1) Subida de archivos
 # =========================
 st.subheader("Paso 1: Subir ficheros")
-master_file = st.file_uploader("📥 Sube el Excel MAESTRO (todas las clases)", type=["xlsx"], key="master")
+master_file = st.file_uploader("📥 Sube el Excel Completo de AllFunds Share Class Tool (con todas las clases)", type=["xlsx"], key="master")
 weights_file = st.file_uploader("📥 Sube el Excel de CARTERA (columnas 'ISIN' y 'Peso %')", type=["xlsx"], key="weights")
 
 if not master_file or not weights_file:
