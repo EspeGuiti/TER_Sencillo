@@ -362,7 +362,31 @@ df_weights_raw = df_weights_raw[df_weights_raw["ISIN"].notna()].copy()
 df_weights = _clean_weights(df_weights_raw)
 df_weights["ISIN"] = df_weights["ISIN"].astype(str).str.strip().str.upper()
 df_weights = df_weights.groupby("ISIN", as_index=False)["Peso %"].sum()
+def merge_cartera_con_maestro(df_master, df_weights):
+    """
+    Une la cartera (df_weights) con el maestro (df_master) por ISIN.
+    Devuelve el DataFrame combinado y una lista de incidencias para ISINs no encontrados.
+    """
+    # Asegura que ISIN está en mayúsculas en ambos
+    df_master = df_master.copy()
+    df_weights = df_weights.copy()
+    df_master["ISIN"] = df_master["ISIN"].astype(str).str.strip().str.upper()
+    df_weights["ISIN"] = df_weights["ISIN"].astype(str).str.strip().str.upper()
 
+    # Merge
+    df_merged = pd.merge(df_weights, df_master, how="left", on="ISIN", suffixes=('', '_m'))
+
+    # Genera incidencias para ISINs no encontrados
+    incidencias = []
+    for idx, row in df_merged.iterrows():
+        if pd.isna(row.get("Family Name", None)):
+            incidencias.append((row["ISIN"], "ISIN no encontrado en el maestro"))
+
+    # Renombra 'Peso %' a 'Weight %' para consistencia interna
+    if "Peso %" in df_merged.columns:
+        df_merged = df_merged.rename(columns={"Peso %": "Weight %"})
+
+    return df_merged, incidencias
 
 # =========================
 # 3) Cartera I (original) + TER
