@@ -108,7 +108,6 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
     has_ia_col = "Prospectus AF - Independent Advice (IA)*" in df_master.columns
     clean_set = {"clean", "clean institucional", "clean institutional"}
 
-    # Incidencias extra para Subscription/Redemption Fee y Soft Close
     incidencias_fees = []
     incidencias_soft = []
 
@@ -119,14 +118,40 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
         hed = row.get("Hedged")
         w   = row.get("Weight %", 0.0)
 
-        found_cartera = False
-        # ... [lógica de matching igual, omitida por brevedad] ...
-        # Si no se encuentra, añade incidencia y fila placeholder
-        if found_cartera:
-            continue
+        # Filtrar todas las del mismo Family Name y Type/Currency/Hedged
+        subset = df_master[
+            (df_master["Family Name"] == fam) &
+            (df_master["Type of Share"] == tos) &
+            (df_master["Currency"] == cur) &
+            (df_master["Hedged"] == hed)
+        ]
+        # 1. Buscar AI (en Prospectus AF)
+        ai_match = subset[subset["Prospectus AF"].apply(lambda x: _has_code(x, "AI"))]
+        # y Transferable = Yes si existe la columna
+        if "Transferable" in subset.columns:
+            ai_match = ai_match[ai_match["Transferable"] == "Yes"]
 
-        chosen = pd.DataFrame([])  # placeholder si no hay matching
-        if chosen.empty:
+        chosen = None
+        match_type = ""
+        if not ai_match.empty:
+            chosen = ai_match
+            match_type = "AI"
+        else:
+            # 2. Buscar clase T/Clean transferible y MiFID FH clean
+            t_match = subset[
+                subset["Prospectus AF"].apply(lambda x: _has_code(x, "T"))
+            ]
+            if "Transferable" in subset.columns:
+                t_match = t_match[t_match["Transferable"] == "Yes"]
+            # Y MiFID FH clean
+            if "MiFID FH" in t_match.columns:
+                t_match = t_match[t_match["MiFID FH"].str.lower().isin(clean_set)]
+            if not t_match.empty:
+                chosen = t_match
+                match_type = "T Clean"
+        found_cartera = chosen is not None and not chosen.empty
+
+        if not found_cartera:
             incidencias.append((str(fam), "Sin clase AI ni T (Clean) transferible con misma (Type of Share/Currency/Hedged) ni clase 'cartera'"))
             results.append({
                 "Family Name":   fam,
@@ -159,7 +184,6 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
         red_fee = best.get("Redemption Fee", 0)
         soft_close = str(best.get("Soft Close", "")).strip().lower()
 
-        # Normalizar fee a float
         def fee_to_float(v):
             if pd.isna(v): return 0.0
             s = str(v).replace("%","").replace(",",".")
@@ -171,7 +195,6 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
         sub_fee_f = fee_to_float(sub_fee)
         red_fee_f = fee_to_float(red_fee)
 
-        # Incidencia comisión
         if sub_fee_f > 0:
             incidencias_fees.append((name_val, f"Subscription Fee es {sub_fee}"))
         if red_fee_f > 0:
@@ -198,9 +221,7 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
             "Weight %":      float(w) if pd.notnull(w) else 0.0
         })
 
-    # IMPORTANTE: NO reordenar results -> respeta el orden de Cartera I
     df_result = pd.DataFrame(results)
-    # Devolver las incidencias normales y las nuevas
     return df_result, incidencias + incidencias_fees + incidencias_soft
 
 def mostrar_tabla_con_formato(df_in, title):
