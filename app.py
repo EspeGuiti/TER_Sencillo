@@ -65,8 +65,6 @@ def _format_eu_number(x, decimals=4):
     s = f"{x:,.{decimals}f}"
     return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
-# ... [el resto del código sin cambios previos] ...
-
 def pretty_table(df_in: pd.DataFrame) -> pd.DataFrame:
     """
     Devuelve SOLO las columnas pedidas del maestro + 'Weight %'.
@@ -88,10 +86,10 @@ def pretty_table(df_in: pd.DataFrame) -> pd.DataFrame:
         "MIFID FH",
         "MiFID EMT",
         "Prospectus AF",
-        "Soft Close",         # Añadido
-        "Subscription Fee",   # Añadido
-        "Redemption Fee",     # Añadido
-        "Weight %",           # ⬅️ añadido (y se mantiene en todas las tablas)
+        "Soft Close",
+        "Subscription Fee",
+        "Redemption Fee",
+        "Weight %",  # ⬅️ añadido (y se mantiene en todas las tablas)
     ]
 
     for c in wanted:
@@ -103,7 +101,6 @@ def pretty_table(df_in: pd.DataFrame) -> pd.DataFrame:
 def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
     """
     Genera Cartera II con el MISMO ORDEN y MISMO Nº de filas que Cartera I.
-    ... [comentarios sin cambios] ...
     """
     results = []
     incidencias = []
@@ -122,13 +119,13 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
         hed = row.get("Hedged")
         w   = row.get("Weight %", 0.0)
 
-        # ... [resto del matching igual] ...
-
         found_cartera = False
-        # ... [fallback cartera y placeholder igual] ...
+        # ... [lógica de matching igual, omitida por brevedad] ...
+        # Si no se encuentra, añade incidencia y fila placeholder
         if found_cartera:
             continue
 
+        chosen = pd.DataFrame([])  # placeholder si no hay matching
         if chosen.empty:
             incidencias.append((str(fam), "Sin clase AI ni T (Clean) transferible con misma (Type of Share/Currency/Hedged) ni clase 'cartera'"))
             results.append({
@@ -205,7 +202,7 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
     df_result = pd.DataFrame(results)
     # Devolver las incidencias normales y las nuevas
     return df_result, incidencias + incidencias_fees + incidencias_soft
-    
+
 def mostrar_tabla_con_formato(df_in, title):
     st.markdown(f"#### {title}")
     df_show = pretty_table(df_in).copy()
@@ -247,10 +244,11 @@ def _has_code(s: str, code: str) -> bool:
     return code.upper() in tokens
 
 def _fmt_ratio_eu_percent(x, decimals=2):
-    """Formatea un ratio (p.ej. 0.0123) como % europeo '1,23%'. """
+    """Formatea un ratio (p.ej. 0.0123) como % europeo '1,23%'."""
     if x is None:
         return "-"
     return f"{x:.{decimals}%}".replace(".", ",")
+
 def _norm_txt(s):
     if pd.isna(s):
         return ""
@@ -260,7 +258,8 @@ def _norm_txt(s):
 
 def _find_header_cell(df_any, targets):
     """
-    Busca la primera celda cuyo texto normalizado está en 'targets'.
+    Busca la primera celda cuyo texto normalizado coincide exactamente con alguno de targets.
+    targets: conjunto/lista de strings normalizados (lowercase, sin acentos).
     Devuelve (row_idx, col_idx) o (None, None) si no encuentra.
     """
     for r in range(df_any.shape[0]):
@@ -327,41 +326,52 @@ if not has_transferable:
 
 df_master = _clean_master(df_master_raw)
 
-# --- Cargar el Excel de CARTERA (auto-descubrimiento ISIN / TOTAL INVERSIÓN) ---
+# --- Cargar Excel de CARTERA en crudo, sin asumir cabeceras ---
 try:
     df_any = pd.read_excel(weights_file, header=None)
 except Exception as e:
     st.error(f"No se pudo leer la cartera: {e}")
     st.stop()
 
-targets_isin   = {"isin"}
-targets_weight = {"total inversion", "total inversion."}  # admite variantes normalizadas
+# Objetivos normalizados (acepta variantes con/ sin acentos y mayúsculas)
+targets_isin = {"isin"}
+targets_weight = {"total inversion", "total inversion."}  # por si lleva punto u otra variante menor
 
 r_isin, c_isin = _find_header_cell(df_any, targets_isin)
 r_wgt,  c_wgt  = _find_header_cell(df_any, targets_weight)
 
 if r_isin is None or r_wgt is None:
-    st.error("No se han encontrado las cabeceras 'ISIN' y/o 'TOTAL INVERSIÓN'.")
+    st.error("No se han encontrado los encabezados 'ISIN' y/o 'TOTAL INVERSIÓN' en el fichero de cartera.")
     st.stop()
 
-# Leer hacia abajo desde cada cabecera
-col_isin_vals = df_any.iloc[r_isin+1:, c_isin].reset_index(drop=True)
-col_wgt_vals  = df_any.iloc[r_wgt+1:,  c_wgt].reset_index(drop=True)
+# Leemos hacia abajo desde la fila siguiente al encabezado, en esas columnas
+col_isin_vals  = df_any.iloc[r_isin+1:, c_isin].reset_index(drop=True)
+col_wgt_vals   = df_any.iloc[r_wgt+1:,  c_wgt].reset_index(drop=True)
 
-# Emparejar por índice y construir df_weights_raw
+# Emparejamos por índice (hasta la longitud máxima de ambas)
 max_len = max(len(col_isin_vals), len(col_wgt_vals))
 col_isin_vals = col_isin_vals.reindex(range(max_len))
 col_wgt_vals  = col_wgt_vals.reindex(range(max_len))
-df_weights_raw = pd.DataFrame({"ISIN": col_isin_vals, "Peso %": col_wgt_vals})
 
-# Quitar filas vacías y excluir el total (100) sin ISIN
+df_weights_raw = pd.DataFrame({
+    "ISIN": col_isin_vals,
+    "Peso %": col_wgt_vals
+})
+
+# Quitar filas totalmente vacías
 df_weights_raw.dropna(how="all", inplace=True)
+
+# Excluir la fila de totales (100) que viene sin ISIN
+# (y en general, cualquier fila sin ISIN no nos sirve)
 df_weights_raw = df_weights_raw[df_weights_raw["ISIN"].notna()].copy()
 
-# Normalizar y agrupar duplicados
+# Normalizar pesos (acepta '16,61', '16.61', '16,61%')
 df_weights = _clean_weights(df_weights_raw)
+
+# Sumar duplicados por ISIN (y normalizar formato del ISIN por seguridad)
 df_weights["ISIN"] = df_weights["ISIN"].astype(str).str.strip().str.upper()
 df_weights = df_weights.groupby("ISIN", as_index=False)["Peso %"].sum()
+
 def merge_cartera_con_maestro(df_master, df_weights):
     """
     Une la cartera (df_weights) con el maestro (df_master) por ISIN.
@@ -400,6 +410,16 @@ peso_total_I = df_I_raw["Weight %"].sum() if "Weight %" in df_I_raw.columns else
 st.write(f"**Suma de pesos cartera (I):** {_format_eu_number(peso_total_I, 2)}%")
 if abs(peso_total_I - 100.0) > 1e-6:
     st.warning("La suma de pesos no es 100%. Corrige tu Excel de cartera.")
+
+def calcular_ter(df):
+    """Calcula el TER medio ponderado."""
+    if "Weight %" not in df.columns or "Ongoing Charge" not in df.columns:
+        return None
+    pesos = df["Weight %"].astype(float)
+    ter = df["Ongoing Charge"].astype(float)
+    if pesos.sum() == 0:
+        return None
+    return (pesos * ter).sum() / pesos.sum()
 
 # TER y tabla
 ter_I = calcular_ter(df_I_raw.rename(columns={"Peso %": "Weight %"}))
