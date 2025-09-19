@@ -221,9 +221,14 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
             "Weight %":      float(w) if pd.notnull(w) else 0.0
         })
 
-    df_result = pd.DataFrame(results)
-    return df_result, incidencias + incidencias_fees + incidencias_soft
-
+        df_result = pd.DataFrame(results)
+    # Filtrar incidencias que no quieres mostrar
+    incidencias_finales = [
+        (fam, msg)
+        for fam, msg in (incidencias + incidencias_fees + incidencias_soft)
+        if not msg.startswith("Sin clase AI ni T (Clean) transferible")
+    ]
+   
 def mostrar_tabla_con_formato(df_in, title):
     st.markdown(f"#### {title}")
     df_show = pretty_table(df_in).copy()
