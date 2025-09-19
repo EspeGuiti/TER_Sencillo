@@ -221,14 +221,15 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
             "Weight %":      float(w) if pd.notnull(w) else 0.0
         })
 
-        df_result = pd.DataFrame(results)
+    df_result = pd.DataFrame(results)
     # Filtrar incidencias que no quieres mostrar
     incidencias_finales = [
         (fam, msg)
         for fam, msg in (incidencias + incidencias_fees + incidencias_soft)
         if not msg.startswith("Sin clase AI ni T (Clean) transferible")
     ]
-   
+    return df_result, incidencias_finales
+
 def mostrar_tabla_con_formato(df_in, title):
     st.markdown(f"#### {title}")
     df_show = pretty_table(df_in).copy()
@@ -445,69 +446,4 @@ def calcular_ter(df):
     ter = df["Ongoing Charge"].astype(float)
     if pesos.sum() == 0:
         return None
-    return (pesos * ter).sum() / pesos.sum()
 
-# TER y tabla
-ter_I = calcular_ter(df_I_raw.rename(columns={"Peso %": "Weight %"}))
-st.session_state.cartera_I = {"table": df_I_raw.rename(columns={"Peso %": "Weight %"}), "ter": ter_I}
-
-mostrar_tabla_con_formato(st.session_state.cartera_I["table"], "Tabla Cartera I (original)")
-if st.session_state.cartera_I["ter"] is not None:
-    st.metric("📊 TER Cartera I", _fmt_ratio_eu_percent(st.session_state.cartera_I["ter"], 2))
-
-# Incidencias de merge
-incidencias = list(incidencias_merge)
-
-# =========================
-# 4) Convertir a Cartera II (AI)
-# =========================
-st.subheader("Paso 3: Convertir a Cartera de Asesoramiento Independiente (Cartera II)")
-st.caption(
-    "Se mantiene Type of Share, Currency, Hedged; Transferable = 'Yes'. "
-    "Prioridad: 'AI' en Prospectus AF; si no hay, 'T' con MiFID FH = Clean/Clean Institucional. "
-    "Siempre se elige la menor Ongoing Charge."
-)
-
-if st.button("🔁 Convertir a cartera Asesoramiento Independiente"):
-    df_II, incid_AI = convertir_a_AI(df_master, st.session_state.cartera_I['table'])
-    st.session_state.cartera_II = {"table": df_II, "ter": calcular_ter(df_II)}
-    incidencias.extend(incid_AI)
-
-# Mostrar Cartera II si existe
-if st.session_state.cartera_II and not st.session_state.cartera_II["table"].empty:
-    mostrar_tabla_con_formato(st.session_state.cartera_II["table"], "Tabla Cartera II (AI)")
-    if st.session_state.cartera_II["ter"] is not None:
-        st.metric("📊 TER Cartera II (AI)", _fmt_ratio_eu_percent(st.session_state.cartera_II["ter"], 2))
-     
-# =========================
-# 5) Comparación I vs II
-# =========================
-st.subheader("Paso 4: Comparar Cartera I vs Cartera II")
-if (
-    st.session_state.cartera_I and st.session_state.cartera_I["ter"] is not None and
-    st.session_state.cartera_II and st.session_state.cartera_II["ter"] is not None
-):
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("#### Cartera I")
-        st.metric("TER medio ponderado", _fmt_ratio_eu_percent(st.session_state.cartera_I["ter"], 2))
-        mostrar_tabla_con_formato(st.session_state.cartera_I["table"], "Tabla Cartera I")
-
-
-    with c2:
-        st.markdown("#### Cartera II (AI)")
-        st.metric("TER medio ponderado", _fmt_ratio_eu_percent(st.session_state.cartera_II["ter"], 2))
-        mostrar_tabla_con_formato(st.session_state.cartera_II["table"], "Tabla Cartera II (AI)")    
-    diff = st.session_state.cartera_II["ter"] - st.session_state.cartera_I["ter"]
-    st.markdown("---")
-    st.subheader("Diferencia de TER (II − I)")
-    st.metric("Diferencia", _fmt_ratio_eu_percent(diff, 2))
-
-# =========================
-# 6) Incidencias
-# =========================
-if incidencias:
-    st.subheader("⚠️ Incidencias detectadas")
-    for fam, msg in incidencias:
-        st.error(f"{fam}: {msg}")
