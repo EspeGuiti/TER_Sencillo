@@ -378,7 +378,7 @@ if st.session_state.cartera_II and st.session_state.cartera_II["table"] is not N
     dfI_sub = dfI_raw[dfI_raw["Family Name_fam"].astype(str).isin(fams_II)].copy()
 
     # Recalcular pesos y TER en el subset de I y usar II tal cual
-    dfI_sub = recalcular_pesos_por_valor(dfI_sub, valor_col="VALOR ACTUAL (EUR)")
+    dfI_sub = recalcular_pesos_por_valor_respetando_oc(dfI_sub, valor_col="VALOR ACTUAL (EUR)")
     ter_I_sub = calcular_ter_por_valor(dfI_sub)
     ter_II_sub = st.session_state.cartera_II["ter"]  # ya viene ponderado por valor en el subset transformado
 
