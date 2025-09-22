@@ -97,6 +97,79 @@ def pretty_table(df_in: pd.DataFrame) -> pd.DataFrame:
             tbl[c] = np.nan
 
     return tbl[wanted]
+def _to_float_eu_money(x):
+    """Convierte strings de dinero en formato EU a float. Admite números ya float."""
+    if pd.isna(x):
+        return np.nan
+    if isinstance(x, (int, float, np.number)):
+        return float(x) if float(x) > 0 else np.nan
+    s = str(x).strip()
+    if s == "":
+        return np.nan
+    s = s.replace("€", "").replace("EUR", "").replace(" ", "")
+    # quita separador miles europeo y deja '.' decimal
+    # ojo: si llega como 1.234,56 -> 1234.56
+    s = s.replace(".", "").replace(",", ".")
+    try:
+        v = float(s)
+        return v if v > 0 else np.nan
+    except Exception:
+        return np.nan
+
+
+def _recalcular_por_valor_y_agrupar_por_nombre(df, *, valor_col="VALOR ACTUAL (EUR)", nombre_col="Name", require_oc=True):
+    """
+    Devuelve (ter_ponderado, df_out)
+    - Filtra a filas elegibles: valor>0 y (si require_oc) Ongoing Charge notna
+    - Agrupa por 'nombre_col', suma VALOR y calcula Weight % = valor / total * 100
+    - TER ponderado por esos Weight %
+    """
+    if valor_col not in df.columns:
+        return None, df.head(0).copy()
+
+    # Normaliza valor actual
+    vals = df[valor_col].apply(_to_float_eu_money)
+    df2 = df.assign(**{valor_col: vals})
+
+    elig = df2[valor_col].notna()
+    if require_oc:
+        elig = elig & df2["Ongoing Charge"].astype(float).notna()
+
+    df_e = df2.loc[elig].copy()
+    if df_e.empty:
+        return None, df_e
+
+    # Si no existe 'Name', usamos 'Family Name'
+    if nombre_col not in df_e.columns:
+        if "Family Name" in df_e.columns:
+            nombre_col = "Family Name"
+        else:
+            # último recurso: mantiene filas tal cual
+            nombre_col = None
+
+    if nombre_col is not None:
+        # agrupamos por nombre y dejamos un OC representativo (si hay varios, media simple del OC)
+        agg = df_e.groupby(nombre_col, dropna=False).agg({
+            valor_col: "sum",
+            "Ongoing Charge": "mean"
+        }).reset_index()
+    else:
+        agg = df_e.copy()
+
+    total_val = agg[valor_col].sum()
+    if total_val <= 0:
+        return None, agg.head(0).copy()
+
+    agg["Weight %"] = (agg[valor_col] / total_val) * 100.0
+
+    # TER ponderado por valor
+    ter = np.nansum(agg["Ongoing Charge"].astype(float) * agg["Weight %"]) / agg["Weight %"].sum()
+
+    # Orden estético
+    cols = [c for c in [nombre_col, valor_col, "Weight %", "Ongoing Charge"] if c is not None]
+    agg = agg[cols].sort_values(by="Weight %", ascending=False)
+
+    return ter, agg
 
 def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
     """
