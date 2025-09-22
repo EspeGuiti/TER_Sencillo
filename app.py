@@ -124,14 +124,19 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
             (df_master["Currency"] == cur) &
             (df_master["Hedged"] == hed)
         ]
-        # 1. Buscar AI (en Prospectus AF) y Transferable = Yes
+      # 1. Buscar AI (en Prospectus AF) y Transferable = Yes (blancos se mantienen como "")
         ai_match = subset[subset["Prospectus AF"].apply(lambda x: _has_code(x, "AI"))]
-        ai_match = ai_match[ai_match["Transferable"] == "Yes"]
+            if "Transferable" in ai_match.columns:
+                ai_match["Transferable"] = ai_match["Transferable"].fillna("").astype(str).str.strip()
+                ai_match_yes = ai_match[ai_match["Transferable"].str.lower() == "yes"]
+            else:
+                ai_match_yes = ai_match
+
 
         chosen = None
         match_type = ""
-        if not ai_match.empty:
-            chosen = ai_match
+        if not ai_match_yes.empty:
+            chosen = ai_match_yes
             match_type = "AI"
         else:
             # 2. Buscar clase T/Clean transferible y MiFID FH clean
@@ -179,6 +184,11 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
         sub_fee = best.get("Subscription Fee", 0)
         red_fee = best.get("Redemption Fee", 0)
         soft_close = str(best.get("Soft Close", "")).strip().lower()
+        # Aviso si 'Transferable' viene en blanco en la clase elegida
+        if "Transferable" in chosen.columns:
+            tf_value = str(best.get("Transferable", "")).strip()
+            if tf_value == "":
+                incidencias.append((str(fam), "El campo 'Transferable' viene EN BLANCO en la clase seleccionada."))
 
         def fee_to_float(v):
             if pd.isna(v): return 0.0
@@ -290,6 +300,23 @@ def _find_header_cell(df_any, targets):
             if _norm_txt(df_any.iat[r, c]) in targets:
                 return r, c
     return None, None
+def _find_col(df, logical_name: str):
+    """
+    Devuelve el nombre REAL de la columna cuyo nombre lógico (sin espacios/case) coincide.
+    Ej.: _find_col(df, 'transferable') -> 'Transferable' o 'Transferable ' si venía con espacios.
+    """
+    target = logical_name.strip().lower()
+    for c in df.columns:
+        if str(c).strip().lower() == target:
+            return c
+    return None
+
+def _norm_str_blank(x):
+    """Convierte NaN/None/espacios a cadena vacía; deja el resto tal cual."""
+    if x is None:
+        return ""
+    s = str(x).strip()
+    return "" if s == "" else s
 
 # =========================
 # 1) Subida de archivos
