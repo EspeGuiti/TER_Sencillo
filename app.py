@@ -126,6 +126,22 @@ def recalcular_pesos_por_valor(df, valor_col="VALOR ACTUAL (EUR)"):
     else:
         df2["Weight %"] = 0.0
     return df2
+def recalcular_pesos_por_valor_respetando_oc(df, valor_col="VALOR ACTUAL (EUR)", oc_col="Ongoing Charge"):
+    """
+    Recalcula 'Weight %' usando SOLO los fondos con Ongoing Charge (no NaN).
+    - Los fondos SIN OC se mantienen en la tabla pero con Weight % = 0.
+    - Los pesos de los fondos con OC se normalizan para sumar 100.
+    """
+    df2 = df.copy()
+    df2[valor_col] = df2[valor_col].apply(_to_float_eu_money)
+    # máscara de elegibles para TER
+    elig = df2[oc_col].astype(float).notna() if oc_col in df2.columns else pd.Series(False, index=df2.index)
+
+    total_ok = df2.loc[elig, valor_col].sum()
+    df2["Weight %"] = 0.0
+    if total_ok and total_ok > 0:
+        df2.loc[elig, "Weight %"] = (df2.loc[elig, valor_col] / total_ok) * 100.0
+    return df2
 
 # =========================
 # 1) Subida de archivos
@@ -201,7 +217,7 @@ df_I_raw = pd.merge(df_cartera_raw, df_master_idx, how="inner", on="ISIN")   # s
 st.session_state.cartera_I_raw = df_I_raw.copy()
 
 # Recalcular pesos por valor (solo los que están en AllFunds)
-df_I = recalcular_pesos_por_valor(df_I_raw, valor_col="VALOR ACTUAL (EUR)")
+df_I = recalcular_pesos_por_valor_respetando_oc(df_I_raw, valor_col="VALOR ACTUAL (EUR)")
 ter_I = calcular_ter_por_valor(df_I)
 st.session_state.cartera_I = {"table": df_I, "ter": ter_I}
 
@@ -323,7 +339,8 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I_filtrada: pd.DataFrame)
         return df_out, incidencias
 
     # Recalcular pesos por valor SOLO con los transformados
-    df_out = recalcular_pesos_por_valor(df_out, valor_col="VALOR ACTUAL (EUR)")
+   # Recalcular pesos por valor SOLO con los que tienen OC; el resto queda con peso 0
+    df_out = recalcular_pesos_por_valor_respetando_oc(df_out, valor_col="VALOR ACTUAL (EUR)")
     return df_out, incidencias
 
 if st.button("🔁 Convertir a cartera Asesoramiento Independiente"):
