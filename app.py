@@ -46,7 +46,7 @@ def _to_float_eu_money(x):
     if s == "":
         return np.nan
     s = s.replace("€", "").replace("EUR", "").replace(" ", "")
-    s = s.replace(".", "").replace(",", ".")
+    s = s.replace(".", "").replace(",", ".")  # 1.234,56 -> 1234.56
     try:
         v = float(s)
         return v if v > 0 else np.nan
@@ -67,14 +67,6 @@ def _clean_master(dfm):
             if s in {"no", "n", "false", "0"}: return "No"
             return str(v)  # dejar tal cual (incluye blanco)
         df["Transferable"] = df["Transferable"].apply(norm_tf)
-    return df
-
-def _clean_weights(dfw):
-    """Limpia pesos de la cartera."""
-    df = dfw.copy()
-    if "Peso %" not in df.columns:
-        raise ValueError("El Excel de cartera debe incluir la columna 'Peso %'.")
-    df["Peso %"] = df["Peso %"].apply(_to_float_percent_like)
     return df
 
 def _format_eu_number(x, decimals=4):
@@ -106,8 +98,8 @@ def pretty_table(df_in: pd.DataFrame) -> pd.DataFrame:
         "Soft Close",
         "Subscription Fee",
         "Redemption Fee",
-        "VALOR ACTUAL (EUR)",   # ⬅️ nueva columna visible
-        "Weight %",             # ⬅️ mantenemos pesos calculados
+        "VALOR ACTUAL (EUR)",   # visible
+        "Weight %",             # pesos calculados por valor
     ]
     for c in wanted:
         if c not in tbl.columns:
@@ -198,12 +190,44 @@ def _find_header_cell(df_any, targets):
                 return r, c
     return None, None
 
+def mostrar_tabla_con_formato(df_in, title):
+    st.markdown(f"#### {title}")
+    df_show = pretty_table(df_in).copy()
+
+    # Formateo europeo para columnas clave
+    def _fmt_eu(v, dec):
+        if pd.isna(v):
+            return ""
+        try:
+            x = float(str(v).replace("%", "").replace(",", "."))
+        except Exception:
+            return str(v)
+        s = f"{x:,.{dec}f}"
+        return s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+    if "Ongoing Charge" in df_show.columns:
+        df_show["Ongoing Charge"] = df_show["Ongoing Charge"].apply(lambda v: _fmt_eu(v, 4)).astype(str)
+
+    if "Weight %" in df_show.columns:
+        df_show["Weight %"] = df_show["Weight %"].apply(lambda v: _fmt_eu(v, 2)).astype(str)
+
+    if "VALOR ACTUAL (EUR)" in df_show.columns:
+        df_show["VALOR ACTUAL (EUR)"] = df_show["VALOR ACTUAL (EUR)"].apply(lambda v: _fmt_eu(v, 2)).astype(str)
+
+    st.dataframe(df_show, use_container_width=True)
+
 # =========================
 # 1) Subida de archivos
 # =========================
 st.subheader("Paso 1: Subir ficheros")
-master_file = st.file_uploader("📥 Sube el Excel Completo de AllFunds Share Class Tool (con todas las clases)", type=["xlsx"], key="master")
-weights_file = st.file_uploader("📥 Sube el Excel de CARTERA (columnas 'ISIN', 'Peso %' y 'VALOR ACTUAL (EUR)')", type=["xlsx"], key="weights")
+master_file = st.file_uploader(
+    "📥 Sube el Excel Completo de AllFunds Share Class Tool (con todas las clases)",
+    type=["xlsx"], key="master"
+)
+weights_file = st.file_uploader(
+    "📥 Sube el Excel de CARTERA (columnas 'ISIN' y 'VALOR ACTUAL (EUR)')",
+    type=["xlsx"], key="weights"
+)
 
 if not master_file or not weights_file:
     st.info("Sube ambos ficheros para continuar.")
@@ -225,7 +249,6 @@ if missing:
     st.error(f"Faltan columnas en el maestro: {missing}")
     st.stop()
 
-has_transferable = "Transferable" in df_master_raw.columns
 st.success("Fichero maestro importado correctamente.")
 
 # Limpieza Ongoing Charge (como tenías)
@@ -240,39 +263,47 @@ df_master = _clean_master(df_master_raw)
 if "Transferable" not in df_master_raw.columns:
     st.warning("El maestro no tiene columna 'Transferable'. Los blancos se mantendrán como '' y solo filtrará 'Yes' cuando exista.")
 
-# Cartera (sin cabeceras fijas)
+# --- Cargar Excel de CARTERA en crudo, sin asumir cabeceras ---
 try:
     df_any = pd.read_excel(weights_file, header=None)
 except Exception as e:
     st.error(f"No se pudo leer la cartera: {e}")
     st.stop()
 
-# Localizar cabeceras
-targets_isin = {"isin"}
-targets_weight = {"total inversion", "total inversion."}
-targets_valor = {"valor actual (eur)"}  # confirmado: nombre EXACTO
+# Solo buscamos ISIN y VALOR ACTUAL (EUR)
+targets_isin  = {"isin"}
+targets_valor = {"valor actual (eur)"}  # nombre exacto confirmado
 
 r_isin,  c_isin  = _find_header_cell(df_any, targets_isin)
-r_wgt,   c_wgt   = _find_header_cell(df_any, targets_weight)
 r_valor, c_valor = _find_header_cell(df_any, targets_valor)
 
-if r_isin is None or r_wgt is None or r_valor is None:
-    st.error("No se han encontrado 'ISIN', 'TOTAL INVERSIÓN' y/o 'VALOR ACTUAL (EUR)'.")
+if r_isin is None or r_valor is None:
+    st.error("No se han encontrado los encabezados 'ISIN' y/o 'VALOR ACTUAL (EUR)'.")
     st.stop()
 
-# Extraer columnas (desde la fila siguiente al encabezado) y alinearlas por índice
-col_isin_vals   = df_any.iloc[r_isin+1:,  c_isin].reset_index(drop=True)
-col_wgt_vals    = df_any.iloc[r_wgt+1:,   c_wgt].reset_index(drop=True)
-col_valor_vals  = df_any.iloc[r_valor+1:, c_valor].reset_index(drop=True)
+# Leemos desde la fila siguiente al encabezado
+col_isin_vals  = df_any.iloc[r_isin+1:,  c_isin].reset_index(drop=True)
+col_valor_vals = df_any.iloc[r_valor+1:, c_valor].reset_index(drop=True)
 
-max_len = max(len(col_isin_vals), len(col_wgt_vals), len(col_valor_vals))
-col_isin_vals  = col_isin_vals.reindex(range(max_len))
-col_wgt_vals   = col_wgt_vals.reindex(range(max_len))
-col_valor_vals = col_valor_vals.reindex(range(max_len))
+# Quitar filas totalmente vacías al final (ambas columnas vacías)
+while len(col_isin_vals) > 0 and pd.isna(col_isin_vals.iloc[-1]) and pd.isna(col_valor_vals.iloc[-1]):
+    col_isin_vals  = col_isin_vals.iloc[:-1]
+    col_valor_vals = col_valor_vals.iloc[:-1]
 
+# Si la última fila de VALOR ACTUAL (EUR) es el total (suele venir sin ISIN), descártala
+if len(col_valor_vals) > 0 and (len(col_isin_vals) == 0 or pd.isna(col_isin_vals.iloc[-1])):
+    col_valor_vals = col_valor_vals.iloc[:-1]
+    if len(col_isin_vals) > len(col_valor_vals):
+        col_isin_vals = col_isin_vals.iloc[:len(col_valor_vals)]
+
+# Alinear longitudes por seguridad
+min_len = min(len(col_isin_vals), len(col_valor_vals))
+col_isin_vals  = col_isin_vals.iloc[:min_len]
+col_valor_vals = col_valor_vals.iloc[:min_len]
+
+# Construir DF de cartera con las dos columnas
 df_weights_raw = pd.DataFrame({
     "ISIN": col_isin_vals,
-    "Peso %": col_wgt_vals,
     "VALOR ACTUAL (EUR)": col_valor_vals
 })
 
@@ -280,16 +311,13 @@ df_weights_raw = pd.DataFrame({
 df_weights_raw.dropna(how="all", inplace=True)
 df_weights_raw = df_weights_raw[df_weights_raw["ISIN"].notna()].copy()
 
-# Normalizar columnas
-df_weights = _clean_weights(df_weights_raw)
-df_weights["VALOR ACTUAL (EUR)"] = df_weights["VALOR ACTUAL (EUR)"].apply(_to_float_eu_money)
+# Normaliza VALOR ACTUAL (EUR) al formato numérico y elimina no positivos
+df_weights_raw["VALOR ACTUAL (EUR)"] = df_weights_raw["VALOR ACTUAL (EUR)"].apply(_to_float_eu_money)
+df_weights_raw = df_weights_raw[df_weights_raw["VALOR ACTUAL (EUR)"].notna()]
 
-# Consolidar duplicados por ISIN (suma peso y valor)
-df_weights["ISIN"] = df_weights["ISIN"].astype(str).str.strip().str.upper()
-df_weights = df_weights.groupby("ISIN", as_index=False).agg({
-    "Peso %": "sum",
-    "VALOR ACTUAL (EUR)": "sum"
-})
+# Consolidar duplicados por ISIN: SUMA del valor actual (los pesos originales ya no se usan)
+df_weights_raw["ISIN"] = df_weights_raw["ISIN"].astype(str).str.strip().str.upper()
+df_weights = df_weights_raw.groupby("ISIN", as_index=False)["VALOR ACTUAL (EUR)"].sum()
 
 def merge_cartera_con_maestro(df_master, df_weights):
     """
@@ -307,10 +335,6 @@ def merge_cartera_con_maestro(df_master, df_weights):
     for _, row in df_merged.iterrows():
         if pd.isna(row.get("Family Name", None)):
             incidencias.append((row["ISIN"], "ISIN no encontrado en el maestro"))
-
-    # Renombrar a Weight %
-    if "Peso %" in df_merged.columns:
-        df_merged = df_merged.rename(columns={"Peso %": "Weight %"})
 
     return df_merged, incidencias
 
@@ -367,7 +391,6 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
         tos = row.get("Type of Share")
         cur = row.get("Currency")
         hed = row.get("Hedged")
-        w   = row.get("Weight %", 0.0)
         valor_actual = row.get("VALOR ACTUAL (EUR)")
 
         subset = df_master[
@@ -430,7 +453,6 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
                 "Subscription Fee": "",
                 "Redemption Fee": "",
                 "VALOR ACTUAL (EUR)": _to_float_eu_money(valor_actual),
-                "Weight %":      float(w) if pd.notnull(w) else 0.0
             })
             continue
 
@@ -483,7 +505,6 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
             "Subscription Fee": best.get("Subscription Fee", ""),
             "Redemption Fee":   best.get("Redemption Fee", ""),
             "VALOR ACTUAL (EUR)": _to_float_eu_money(valor_actual),
-            "Weight %":       float(w) if pd.notnull(w) else 0.0
         })
 
     df_result = pd.DataFrame(results)
@@ -508,38 +529,11 @@ st.caption(
     "Siempre se elige la menor Ongoing Charge. Ponderación por VALOR ACTUAL (EUR)."
 )
 
-def mostrar_tabla_con_formato(df_in, title):
-    st.markdown(f"#### {title}")
-    df_show = pretty_table(df_in).copy()
-
-    # Formateo europeo para columnas clave
-    def _fmt_eu(v, dec):
-        if pd.isna(v):
-            return ""
-        try:
-            x = float(str(v).replace("%", "").replace(",", "."))
-        except Exception:
-            return str(v)
-        s = f"{x:,.{dec}f}"
-        return s.replace(",", "X").replace(".", ",").replace("X", ".")
-
-    if "Ongoing Charge" in df_show.columns:
-        df_show["Ongoing Charge"] = df_show["Ongoing Charge"].apply(lambda v: _fmt_eu(v, 4)).astype(str)
-
-    if "Weight %" in df_show.columns:
-        df_show["Weight %"] = df_show["Weight %"].apply(lambda v: _fmt_eu(v, 2)).astype(str)
-
-    if "VALOR ACTUAL (EUR)" in df_show.columns:
-        df_show["VALOR ACTUAL (EUR)"] = df_show["VALOR ACTUAL (EUR)"].apply(lambda v: _fmt_eu(v, 2)).astype(str)
-
-    st.dataframe(df_show, use_container_width=True)
-
 # Botón de conversión
 if st.button("🔁 Convertir a cartera Asesoramiento Independiente"):
     df_II, incid_AI = convertir_a_AI(df_master, st.session_state.cartera_I_raw)
     # df_II ya viene filtrado y ponderado; TER se puede recomputar por si acaso
     if not df_II.empty:
-        # TER como media ponderada por Weight % (df_II ya tiene Weight % calculado)
         ter_II = np.nansum(df_II["Weight %"].astype(float) * df_II["Ongoing Charge"].astype(float)) / df_II["Weight %"].sum()
     else:
         ter_II = None
@@ -587,3 +581,4 @@ if st.session_state.get("incidencias"):
     st.subheader("⚠️ Incidencias detectadas")
     for fam, msg in st.session_state.incidencias:
         st.error(f"{fam}: {msg}")
+
