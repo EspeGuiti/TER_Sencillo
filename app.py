@@ -14,11 +14,11 @@ st.markdown("# 📊 Calculadora de TER — Cartera I vs Cartera II (Asesoramient
 # Estado de sesión
 # =========================
 if "cartera_I" not in st.session_state:
-    st.session_state.cartera_I = None  # {"table": df, "ter": float}
+    st.session_state.cartera_I = None                 # {"table": df, "ter": float}
 if "cartera_I_raw" not in st.session_state:
-    st.session_state.cartera_I_raw = None  # df mergeado completo (para convertir a AI)
+    st.session_state.cartera_I_raw = None             # df mergeado por ISIN (para convertir)
 if "cartera_II" not in st.session_state:
-    st.session_state.cartera_II = None
+    st.session_state.cartera_II = None                # {"table": df, "ter": float}
 if "incidencias" not in st.session_state:
     st.session_state.incidencias = []
 
@@ -26,406 +26,237 @@ if "incidencias" not in st.session_state:
 # Helpers
 # =========================
 def _to_float_percent_like(x):
-    """Convierte '1,23%' o '1.23' a float (1.23)."""
-    if pd.isna(x):
-        return np.nan
-    s = str(x).strip()
-    s = s.replace("%", "").replace(",", ".")
-    try:
-        return float(s)
-    except Exception:
-        return np.nan
+    if pd.isna(x): return np.nan
+    s = str(x).strip().replace("%","").replace(",",".")
+    try: return float(s)
+    except: return np.nan
 
 def _to_float_eu_money(x):
-    """Convierte strings de dinero en formato EU a float (>0) o NaN."""
-    if pd.isna(x):
-        return np.nan
-    if isinstance(x, (int, float, np.number)):
+    if pd.isna(x): return np.nan
+    if isinstance(x, (int,float,np.number)):
         return float(x) if float(x) > 0 else np.nan
     s = str(x).strip()
-    if s == "":
-        return np.nan
-    s = s.replace("€", "").replace("EUR", "").replace(" ", "")
-    s = s.replace(".", "").replace(",", ".")  # 1.234,56 -> 1234.56
+    if s == "": return np.nan
+    s = s.replace("€","").replace("EUR","").replace(" ","")
+    s = s.replace(".","").replace(",",".")  # 1.234,56 -> 1234.56
     try:
         v = float(s)
         return v if v > 0 else np.nan
-    except Exception:
+    except:
         return np.nan
 
-def _clean_master(dfm):
-    """Limpia columnas críticas del maestro."""
-    df = dfm.copy()
-    if "Ongoing Charge" in df.columns:
-        df["Ongoing Charge"] = df["Ongoing Charge"].apply(_to_float_percent_like)
-    # Normalizar Transferable -> deja blancos como "", respeta Yes/No si vienen
-    if "Transferable" in df.columns:
-        def norm_tf(v):
-            if pd.isna(v): return ""
-            s = str(v).strip().lower()
-            if s in {"yes", "y", "true", "1"}: return "Yes"
-            if s in {"no", "n", "false", "0"}: return "No"
-            return str(v)  # dejar tal cual (incluye blanco)
-        df["Transferable"] = df["Transferable"].apply(norm_tf)
-    return df
+def _norm_txt(s):
+    """Normaliza texto para buscar encabezados de forma robusta."""
+    if pd.isna(s): return ""
+    s = str(s).replace("\xa0"," ")
+    s = unicodedata.normalize("NFKD", s)
+    s = s.encode("ascii","ignore").decode("ascii")
+    s = re.sub(r"\s+"," ",s).strip().lower()
+    return s
 
-def _format_eu_number(x, decimals=4):
-    if pd.isna(x):
-        return x
-    s = f"{x:,.{decimals}f}"
-    return s.replace(",", "X").replace(".", ",").replace("X", ".")
-
-def pretty_table(df_in: pd.DataFrame) -> pd.DataFrame:
-    """
-    Devuelve columnas principales + 'Weight %' + 'VALOR ACTUAL (EUR)' si existe.
-    """
-    tbl = df_in.copy()
-
-    if "MiFID FH" in tbl.columns and "MIFID FH" not in tbl.columns:
-        tbl.rename(columns={"MiFID FH": "MIFID FH"}, inplace=True)
-
-    wanted = [
-        "ISIN",
-        "Name",
-        "Type of Share",
-        "Currency",
-        "Hedged",
-        "Ongoing Charge",
-        "Min. Initial",
-        "MIFID FH",
-        "MiFID EMT",
-        "Prospectus AF",
-        "Soft Close",
-        "Subscription Fee",
-        "Redemption Fee",
-        "VALOR ACTUAL (EUR)",   # visible
-        "Weight %",             # pesos calculados por valor
-    ]
-    for c in wanted:
-        if c not in tbl.columns:
-            tbl[c] = np.nan
-
-    return tbl[wanted]
-
-def _recalcular_por_valor_y_agrupar_por_nombre(df, *, valor_col="VALOR ACTUAL (EUR)", nombre_col="Name", require_oc=True):
-    """
-    Devuelve (ter_ponderado, df_out)
-    - Filtra a filas elegibles: valor>0 y (si require_oc) Ongoing Charge notna
-    - Agrupa por 'nombre_col' (o Family Name si no existe), suma VALOR y calcula Weight % = valor / total * 100
-    - TER ponderado por esos Weight %
-    """
-    if valor_col not in df.columns:
-        return None, df.head(0).copy()
-
-    vals = df[valor_col].apply(_to_float_eu_money)
-    df2 = df.assign(**{valor_col: vals})
-
-    elig = df2[valor_col].notna()
-    if require_oc:
-        elig = elig & df2["Ongoing Charge"].astype(float).notna()
-
-    df_e = df2.loc[elig].copy()
-    if df_e.empty:
-        return None, df_e
-
-    # Nombre preferente
-    if nombre_col not in df_e.columns:
-        if "Family Name" in df_e.columns:
-            nombre_col = "Family Name"
-        else:
-            nombre_col = None
-
-    if nombre_col is not None:
-        agg = df_e.groupby(nombre_col, dropna=False).agg({
-            valor_col: "sum",
-            "Ongoing Charge": "mean"
-        }).reset_index()
-    else:
-        agg = df_e.copy()
-
-    total_val = agg[valor_col].sum()
-    if total_val <= 0:
-        return None, agg.head(0).copy()
-
-    agg["Weight %"] = (agg[valor_col] / total_val) * 100.0
-
-    # TER ponderado por valor
-    ter = np.nansum(agg["Ongoing Charge"].astype(float) * agg["Weight %"]) / agg["Weight %"].sum()
-
-    # Orden y columnas
-    cols = [c for c in [nombre_col, valor_col, "Weight %", "Ongoing Charge"] if c is not None]
-    agg = agg[cols].sort_values(by="Weight %", ascending=False)
-
-    return ter, agg
+def _find_header_cell(df_any, targets):
+    """Busca la primera celda cuyo _norm_txt esté en targets."""
+    for r in range(df_any.shape[0]):
+        for c in range(df_any.shape[1]):
+            if _norm_txt(df_any.iat[r,c]) in targets:
+                return r,c
+    return None,None
 
 def _has_code(s: str, code: str) -> bool:
-    """Comprueba si 'code' aparece como token en 'Prospectus AF'."""
-    if pd.isna(s):
-        return False
+    if pd.isna(s): return False
     tokens = re.split(r'[^A-Za-z0-9]+', str(s).upper())
     return code.upper() in tokens
 
 def _fmt_ratio_eu_percent(x, decimals=2):
-    """Formatea un ratio (p.ej. 0.0123) como % europeo '1,23%'."""
-    if x is None:
-        return "-"
+    if x is None: return "-"
     return f"{x:.{decimals}%}".replace(".", ",")
 
-def _norm_txt(s):
-    """Normaliza texto de celdas para comparar cabeceras de forma robusta."""
-    if pd.isna(s):
-        return ""
-    s = str(s)
-    s = s.replace("\xa0", " ")              # NBSP -> espacio normal
-    s = unicodedata.normalize("NFKD", s)
-    s = s.encode("ascii", "ignore").decode("ascii")  # sin acentos
-    s = re.sub(r"\s+", " ", s).strip().lower()      # colapsa espacios
-    return s
+def _format_eu_number(x, decimals=2):
+    if pd.isna(x): return ""
+    s = f"{float(x):,.{decimals}f}"
+    return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
-def _find_header_cell(df_any, targets):
-    """
-    Busca la primera celda cuyo texto normalizado coincide exactamente con alguno de targets.
-    targets: conjunto/lista de strings normalizados (lowercase, sin acentos).
-    Devuelve (row_idx, col_idx) o (None, None) si no encuentra.
-    """
-    for r in range(df_any.shape[0]):
-        for c in range(df_any.shape[1]):
-            if _norm_txt(df_any.iat[r, c]) in targets:
-                return r, c
-    return None, None
+def _clean_master(dfm):
+    df = dfm.copy()
+    if "Ongoing Charge" in df.columns:
+        df["Ongoing Charge"] = df["Ongoing Charge"].apply(_to_float_percent_like)
+    if "Transferable" in df.columns:
+        def norm_tf(v):
+            if pd.isna(v): return ""
+            s = str(v).strip().lower()
+            if s in {"yes","y","true","1"}: return "Yes"
+            if s in {"no","n","false","0"}:  return "No"
+            return str(v)  # dejar blancos u otros valores tal cual
+        df["Transferable"] = df["Transferable"].apply(norm_tf)
+    return df
 
-def mostrar_tabla_con_formato(df_in, title):
-    st.markdown(f"#### {title}")
-    df_show = pretty_table(df_in).copy()
+def pretty_table(df_in: pd.DataFrame) -> pd.DataFrame:
+    """Columnas a mostrar (con Name, no Family Name)."""
+    tbl = df_in.copy()
+    if "MiFID FH" in tbl.columns and "MIFID FH" not in tbl.columns:
+        tbl.rename(columns={"MiFID FH":"MIFID FH"}, inplace=True)
 
-    # Formateo europeo para columnas clave
-    def _fmt_eu(v, dec):
-        if pd.isna(v):
-            return ""
-        try:
-            x = float(str(v).replace("%", "").replace(",", "."))
-        except Exception:
-            return str(v)
-        s = f"{x:,.{dec}f}"
-        return s.replace(",", "X").replace(".", ",").replace("X", ".")
+    wanted = [
+        "ISIN","Name","Type of Share","Currency","Hedged","Ongoing Charge",
+        "Min. Initial","MIFID FH","MiFID EMT","Prospectus AF","Soft Close",
+        "Subscription Fee","Redemption Fee","VALOR ACTUAL (EUR)","Weight %"
+    ]
+    for c in wanted:
+        if c not in tbl.columns: tbl[c] = np.nan
+    return tbl[wanted]
 
-    if "Ongoing Charge" in df_show.columns:
-        df_show["Ongoing Charge"] = df_show["Ongoing Charge"].apply(lambda v: _fmt_eu(v, 4)).astype(str)
+def calcular_ter_por_valor(df):
+    """TER ponderado por Weight % (calculado por valor). Ignora filas sin OC."""
+    if "Weight %" not in df.columns or "Ongoing Charge" not in df.columns: return None
+    w = df["Weight %"].astype(float)
+    oc = df["Ongoing Charge"].astype(float)
+    mask = w.notna() & oc.notna()
+    if not mask.any(): return None
+    return np.nansum(w[mask]*oc[mask]) / w[mask].sum()
 
-    if "Weight %" in df_show.columns:
-        df_show["Weight %"] = df_show["Weight %"].apply(lambda v: _fmt_eu(v, 2)).astype(str)
-
-    if "VALOR ACTUAL (EUR)" in df_show.columns:
-        df_show["VALOR ACTUAL (EUR)"] = df_show["VALOR ACTUAL (EUR)"].apply(lambda v: _fmt_eu(v, 2)).astype(str)
-
-    st.dataframe(df_show, use_container_width=True)
+def recalcular_pesos_por_valor(df, valor_col="VALOR ACTUAL (EUR)"):
+    """Normaliza Weight % a partir del valor en EUR (solo positivos)."""
+    df2 = df.copy()
+    vals = df2[valor_col].apply(_to_float_eu_money)
+    df2[valor_col] = vals
+    df2 = df2[vals.notna()]
+    total = df2[valor_col].sum()
+    if total and total > 0:
+        df2["Weight %"] = df2[valor_col] / total * 100.0
+    else:
+        df2["Weight %"] = 0.0
+    return df2
 
 # =========================
 # 1) Subida de archivos
 # =========================
 st.subheader("Paso 1: Subir ficheros")
-master_file = st.file_uploader(
-    "📥 Sube el Excel Completo de AllFunds Share Class Tool (con todas las clases)",
-    type=["xlsx"], key="master"
-)
-weights_file = st.file_uploader(
-    "📥 Sube el Excel de CARTERA (columnas 'ISIN' y 'VALOR ACTUAL (EUR)')",
-    type=["xlsx"], key="weights"
-)
-
-if not master_file or not weights_file:
+master_file  = st.file_uploader("📥 Excel AllFunds (Share Class Tool, completo)", type=["xlsx"], key="master")
+cartera_file = st.file_uploader("📥 Excel de Cartera (columnas 'ISIN' y 'VALOR ACTUAL (EUR)')", type=["xlsx"], key="weights")
+if not master_file or not cartera_file:
     st.info("Sube ambos ficheros para continuar.")
     st.stop()
 
 # =========================
 # 2) Carga y validaciones
 # =========================
-
 # Maestro
 df_master_raw = pd.read_excel(master_file, skiprows=2)
-
-required_cols = [
-    "Family Name","Type of Share","Currency","Hedged",
-    "MiFID FH","Min. Initial","Ongoing Charge","ISIN","Prospectus AF"
-]
+required_cols = ["Family Name","Type of Share","Currency","Hedged","MiFID FH","Min. Initial","Ongoing Charge","ISIN","Prospectus AF"]
 missing = [c for c in required_cols if c not in df_master_raw.columns]
 if missing:
     st.error(f"Faltan columnas en el maestro: {missing}")
     st.stop()
-
-st.success("Fichero maestro importado correctamente.")
-
-# Limpieza Ongoing Charge (como tenías)
 df_master_raw["Ongoing Charge"] = (
-    df_master_raw["Ongoing Charge"].astype(str)
-        .str.replace("%","", regex=False)
-        .str.replace(",",".", regex=False)
-        .astype(float)
+    df_master_raw["Ongoing Charge"].astype(str).str.replace("%","",regex=False).str.replace(",",".",regex=False).astype(float)
 )
 df_master = _clean_master(df_master_raw)
 
-if "Transferable" not in df_master_raw.columns:
-    st.warning("El maestro no tiene columna 'Transferable'. Los blancos se mantendrán como '' y solo filtrará 'Yes' cuando exista.")
-
-# --- Cargar Excel de CARTERA en crudo, sin asumir cabeceras ---
-# --- Cargar Excel de CARTERA en crudo, sin asumir cabeceras ---
+# Cartera (sin asumir cabeceras)
 try:
-    df_any = pd.read_excel(weights_file, header=None)
+    df_any = pd.read_excel(cartera_file, header=None)
 except Exception as e:
     st.error(f"No se pudo leer la cartera: {e}")
     st.stop()
 
-# Variantes admitidas para VALOR ACTUAL (EUR)
 targets_isin  = {"isin"}
-targets_valor = {
-    "valor actual (eur)",
-    "valor actual(eur)",
-    "valor actual eur",
-    "valor actual €",
-    "valor actual€",
-    "valor actual",
-}
-
-def _find_header_cell(df_any, targets):
-    """Busca la primera celda cuyo texto normalizado coincida con alguno de 'targets'."""
-    for r in range(df_any.shape[0]):
-        for c in range(df_any.shape[1]):
-            cell = _norm_txt(df_any.iat[r, c])
-            if cell in targets:
-                return r, c
-    return None, None
-
+targets_valor = {"valor actual (eur)","valor actual(eur)","valor actual eur","valor actual €","valor actual€","valor actual"}
 r_isin,  c_isin  = _find_header_cell(df_any, targets_isin)
 r_valor, c_valor = _find_header_cell(df_any, targets_valor)
-
 if r_isin is None or r_valor is None:
     st.error("No se han encontrado los encabezados 'ISIN' y/o 'VALOR ACTUAL (EUR)'.")
     st.stop()
 
-# Leemos desde la fila siguiente al encabezado
-col_isin_vals  = df_any.iloc[r_isin+1:,  c_isin].reset_index(drop=True)
-col_valor_vals = df_any.iloc[r_valor+1:, c_valor].reset_index(drop=True)
+col_isin   = df_any.iloc[r_isin+1:,  c_isin].reset_index(drop=True)
+col_valor  = df_any.iloc[r_valor+1:, c_valor].reset_index(drop=True)
 
-# --- Quitar el TOTAL al final de la columna de valor ---
-# 1) Recorta filas vacías al final (ambas columnas vacías)
-while len(col_isin_vals) > 0 and pd.isna(col_isin_vals.iloc[-1]) and pd.isna(col_valor_vals.iloc[-1]):
-    col_isin_vals  = col_isin_vals.iloc[:-1]
-    col_valor_vals = col_valor_vals.iloc[:-1]
+# eliminar total final (si última fila no tiene ISIN o contiene 'total')
+while len(col_isin)>0 and (pd.isna(col_isin.iloc[-1]) or _norm_txt(col_isin.iloc[-1]) in {"total","totales"}):
+    col_isin  = col_isin.iloc[:-1]
+    col_valor = col_valor.iloc[:-1]
 
-# 2) Si la última fila parece el TOTAL (sin ISIN o con texto 'total'), descártala
-def _is_total_row(isin_cell, valor_cell):
-    a = _norm_txt(isin_cell)
-    b = _norm_txt(valor_cell)
-    return (a in {"", "total", "totales"}) or (b in {"total", "totales"})
+min_len = min(len(col_isin), len(col_valor))
+col_isin, col_valor = col_isin.iloc[:min_len], col_valor.iloc[:min_len]
 
-if len(col_valor_vals) > 0 and _is_total_row(
-    col_isin_vals.iloc[-1] if len(col_isin_vals) else "", col_valor_vals.iloc[-1]
-):
-    col_isin_vals  = col_isin_vals.iloc[:-1]
-    col_valor_vals = col_valor_vals.iloc[:-1]
+df_cartera_raw = pd.DataFrame({"ISIN": col_isin, "VALOR ACTUAL (EUR)": col_valor}).dropna(how="all")
+df_cartera_raw = df_cartera_raw[df_cartera_raw["ISIN"].notna()].copy()
+df_cartera_raw["ISIN"] = df_cartera_raw["ISIN"].astype(str).str.strip().str.upper()
+df_cartera_raw["VALOR ACTUAL (EUR)"] = df_cartera_raw["VALOR ACTUAL (EUR)"].apply(_to_float_eu_money)
+df_cartera_raw = df_cartera_raw[df_cartera_raw["VALOR ACTUAL (EUR)"].notna()]
 
-# Alinear longitudes por seguridad
-min_len = min(len(col_isin_vals), len(col_valor_vals))
-col_isin_vals  = col_isin_vals.iloc[:min_len]
-col_valor_vals = col_valor_vals.iloc[:min_len]
-
-# Construir DF cartera
-df_weights_raw = pd.DataFrame({
-    "ISIN": col_isin_vals,
-    "VALOR ACTUAL (EUR)": col_valor_vals
-})
-
-# Limpieza
-df_weights_raw.dropna(how="all", inplace=True)
-df_weights_raw = df_weights_raw[df_weights_raw["ISIN"].notna()].copy()
-
-# Normaliza VALOR ACTUAL (EUR) a número y elimina no-positivos
-df_weights_raw["VALOR ACTUAL (EUR)"] = df_weights_raw["VALOR ACTUAL (EUR)"].apply(_to_float_eu_money)
-df_weights_raw = df_weights_raw[df_weights_raw["VALOR ACTUAL (EUR)"].notna()]
-
-# Consolidar duplicados por ISIN (sumamos el valor actual). ¡No usamos los "Peso %" originales!
-df_weights_raw["ISIN"] = df_weights_raw["ISIN"].astype(str).str.strip().str.upper()
-df_weights = df_weights_raw.groupby("ISIN", as_index=False)["VALOR ACTUAL (EUR)"].sum()
-
-# (Opcional) Debug visual para confirmar detección
-st.caption(f"Cabecera ISIN encontrada en fila {r_isin+1}, columna {c_isin+1}.  "
-           f"Cabecera VALOR ACTUAL (EUR) en fila {r_valor+1}, columna {c_valor+1}.  "
-           f"Registros cartera leídos: {len(df_weights)}")
-
-def merge_cartera_con_maestro(df_master, df_weights):
-    """
-    Une la cartera con el maestro por ISIN.
-    Devuelve (df_merged, incidencias).
-    """
-    df_master = df_master.copy()
-    df_weights = df_weights.copy()
-    df_master["ISIN"] = df_master["ISIN"].astype(str).str.strip().str.upper()
-    df_weights["ISIN"] = df_weights["ISIN"].astype(str).str.strip().str.upper()
-
-    df_merged = pd.merge(df_weights, df_master, how="left", on="ISIN", suffixes=('', '_m'))
-
-    incidencias = []
-    for _, row in df_merged.iterrows():
-        if pd.isna(row.get("Family Name", None)):
-            incidencias.append((row["ISIN"], "ISIN no encontrado en el maestro"))
-
-    return df_merged, incidencias
+# si hay duplicados de ISIN, sumar valor
+df_cartera_raw = df_cartera_raw.groupby("ISIN", as_index=False)["VALOR ACTUAL (EUR)"].sum()
 
 # =========================
-# 3) Cartera I (original) + TER REAL por VALOR ACTUAL
+# 3) Cartera I: match por ISIN y limpieza
 # =========================
 st.subheader("Paso 2: Calcular Cartera I (original)")
 
-df_I_raw, incidencias_merge = merge_cartera_con_maestro(df_master, df_weights)
+# Merge por ISIN y DESCARTAR los que no están en AllFunds
+df_master_idx = df_master.copy()
+df_master_idx["ISIN"] = df_master_idx["ISIN"].astype(str).str.strip().str.upper()
+df_I_raw = pd.merge(df_cartera_raw, df_master_idx, how="inner", on="ISIN")   # solo los que están en AllFunds
 
-# Guardamos la mergeada cruda (con Family/Share/Currency/Hedged/Valor) para convertir a AI
+# Guardamos versión RAW (para conversión) con Name/Family/ToS/Currency/Hedged/OC, etc.
 st.session_state.cartera_I_raw = df_I_raw.copy()
 
-# TER real y tabla: SOLO fondos con OC y ponderados por VALOR ACTUAL (EUR), agrupando por Name
-ter_I, tabla_I = _recalcular_por_valor_y_agrupar_por_nombre(
-    df_I_raw, valor_col="VALOR ACTUAL (EUR)", nombre_col="Name", require_oc=True
-)
-st.session_state.cartera_I = {"table": tabla_I, "ter": ter_I}
+# Recalcular pesos por valor (solo los que están en AllFunds)
+df_I = recalcular_pesos_por_valor(df_I_raw, valor_col="VALOR ACTUAL (EUR)")
+ter_I = calcular_ter_por_valor(df_I)
+st.session_state.cartera_I = {"table": df_I, "ter": ter_I}
 
-# Mostrar tabla I
-mostrar_df = st.session_state.cartera_I["table"].copy()
-st.markdown(f"**Fondos usados (Cartera I) para TER real:** {len(mostrar_df)}")
-mostrar_tabla_con_formato(mostrar_df, "Tabla Cartera I (filtrada y ponderada por VALOR ACTUAL)")
+# Mostrar Cartera I
+st.markdown(f"**Fondos válidos en AllFunds (Cartera I):** {len(df_I)}")
+def mostrar_tabla_con_formato(df_in, title):
+    st.markdown(f"#### {title}")
+    df_show = pretty_table(df_in).copy()
+    # formato
+    if "Ongoing Charge" in df_show.columns:
+        df_show["Ongoing Charge"] = df_show["Ongoing Charge"].apply(lambda v: _format_eu_number(v,4))
+    if "Weight %" in df_show.columns:
+        df_show["Weight %"] = df_show["Weight %"].apply(lambda v: _format_eu_number(v,2))
+    if "VALOR ACTUAL (EUR)" in df_show.columns:
+        df_show["VALOR ACTUAL (EUR)"] = df_show["VALOR ACTUAL (EUR)"].apply(lambda v: _format_eu_number(v,2))
+    st.dataframe(df_show, use_container_width=True)
 
-if st.session_state.cartera_I["ter"] is not None:
-    st.metric("📊 TER Cartera I (real por valor)", _fmt_ratio_eu_percent(st.session_state.cartera_I["ter"], 2))
-else:
-    st.warning("No se pudo calcular el TER de Cartera I (no hay Ongoing Charge y/o VALOR ACTUAL (EUR) válido).")
-
-# Incidencias de merge
-incidencias = list(incidencias_merge)
+mostrar_tabla_con_formato(df_I, "Tabla Cartera I (solo ISIN encontrados en AllFunds, pesos por valor)")
+st.metric("📊 TER Cartera I (real por valor)", _fmt_ratio_eu_percent(ter_I, 2) if ter_I is not None else "-")
 
 # =========================
-# 5) Convertir a Cartera II (AI)
+# 4) Conversión a Cartera II (AI)
 # =========================
-def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
+st.subheader("Paso 3: Convertir a Cartera de Asesoramiento Independiente (Cartera II)")
+st.caption("Se busca en el MISMO Family Name que la clase original, en este orden: 1) AI + Transferable='Yes'; 2) T + Transferable='Yes' con MiFID FH 'clean'; 3) clase cuyo *Name* contenga la palabra 'Cartera'. Se asigna el mismo VALOR ACTUAL (EUR) del fondo original y se recalculan pesos por valor con los transformados.")
+
+def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I_filtrada: pd.DataFrame):
     """
-    Convierte Cartera I a clases AI/T (Clean).
-    Reglas:
-      - Mantener Type of Share, Currency, Hedged
-      - Prioridad: AI + Transferable=='Yes'; si no, T + Transferable=='Yes' + MiFID FH clean
-      - Elegir menor Ongoing Charge
-    Devuelve (df_AI_filtrado_agrupado, incidencias)
+    Convierte Cartera I a clases AI/T Clean dentro del MISMO Family Name.
+    Orden de búsqueda:
+      1) AI + Transferable == 'Yes' con mismo Type of Share / Currency / Hedged
+      2) T  + Transferable == 'Yes' con MiFID FH 'clean' y mismo Type / Currency / Hedged
+      3) Cualquier clase del mismo Family Name cuyo Name contenga 'Cartera'
+    Para la clase elegida, copia VALOR ACTUAL (EUR) del fondo original y luego
+    recalcula los pesos por valor usando solo los transformados.
     """
-    results = []
+    clean_set = {"clean", "clean institucional", "clean institutional"}
+    out_rows = []
     incidencias = []
 
-    clean_set = {"clean", "clean institucional", "clean institutional"}
-    incidencias_fees = []
-    incidencias_soft = []
+    def _name_has_cartera(row):
+        for col in ("Name", "Share Class Name", "Fund Name"):
+            v = row.get(col, None)
+            if pd.notna(v) and "cartera" in str(v).lower():
+                return True
+        return False
 
-    for _, row in df_cartera_I.iterrows():
-        fam = row.get("Family Name")
-        tos = row.get("Type of Share")
-        cur = row.get("Currency")
-        hed = row.get("Hedged")
-        valor_actual = row.get("VALOR ACTUAL (EUR)")
+    for _, row in df_cartera_I_filtrada.iterrows():
+        fam   = row.get("Family Name")
+        tos   = row.get("Type of Share")
+        cur   = row.get("Currency")
+        hed   = row.get("Hedged")
+        valor = row.get("VALOR ACTUAL (EUR)")
 
+        # Subconjunto por mismas características
         subset = df_master[
             (df_master["Family Name"] == fam) &
             (df_master["Type of Share"] == tos) &
@@ -433,211 +264,130 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
             (df_master["Hedged"] == hed)
         ]
 
-        # 1) AI + Transferable==Yes (respetando blancos "")
-        ai_match = subset[subset["Prospectus AF"].apply(lambda x: _has_code(x, "AI"))]
-        if "Transferable" in ai_match.columns:
-            ai_match = ai_match.copy()
-            ai_match["Transferable"] = ai_match["Transferable"].fillna("").astype(str).str.strip()
-            ai_match_yes = ai_match[ai_match["Transferable"].str.lower() == "yes"]
-        else:
-            ai_match_yes = ai_match
-
         chosen = None
 
-        if not ai_match_yes.empty:
-            chosen = ai_match_yes
-        else:
-            # 2) T + Transferable==Yes + MiFID FH clean
-            t_match = subset[subset["Prospectus AF"].apply(lambda x: _has_code(x, "T"))]
-            if "Transferable" in t_match.columns:
-                t_match = t_match.copy()
-                t_match["Transferable"] = t_match["Transferable"].fillna("").astype(str).str.strip()
-                t_match_yes = t_match[t_match["Transferable"].str.lower() == "yes"]
-            else:
-                t_match_yes = t_match
+        # 1) AI + Transferable Yes
+        ai = subset[subset["Prospectus AF"].apply(lambda x: _has_code(x, "AI"))]
+        if "Transferable" in ai.columns:
+            ai = ai[ai["Transferable"].fillna("").astype(str).str.strip().str.lower() == "yes"]
+        if not ai.empty:
+            chosen = ai
 
-            if "MiFID FH" in t_match_yes.columns:
-                t_match_yes = t_match_yes.copy()
-                t_match_yes["MiFID FH"] = t_match_yes["MiFID FH"].fillna("").astype(str)
-                t_match_yes = t_match_yes[t_match_yes["MiFID FH"].str.lower().isin(clean_set)]
+        # 2) T + Transferable Yes + MiFID FH clean
+        if chosen is None or chosen.empty:
+            t = subset[subset["Prospectus AF"].apply(lambda x: _has_code(x, "T"))]
+            if "Transferable" in t.columns:
+                t = t[t["Transferable"].fillna("").astype(str).str.strip().str.lower() == "yes"]
+            if "MiFID FH" in t.columns:
+                t = t[t["MiFID FH"].fillna("").astype(str).str.lower().isin(clean_set)]
+            if not t.empty:
+                chosen = t
 
-            if not t_match_yes.empty:
-                chosen = t_match_yes
+        # 3) Cualquier clase del MISMO Family Name cuyo Name contenga 'Cartera'
+        if chosen is None or chosen.empty:
+            fam_pool = df_master[df_master["Family Name"] == fam].copy()
+            cartera_pool = fam_pool[fam_pool.apply(_name_has_cartera, axis=1)]
+            if not cartera_pool.empty:
+                chosen = cartera_pool
 
+        # Si aún no hay nada, incidencia y continuar
         if chosen is None or chosen.empty:
             incidencias.append(
-                (str(fam),
-                 "Sin clase AI ni T (Clean) transferible con misma (Type of Share/Currency/Hedged)")
+                (row.get("Name","(sin nombre)"),
+                 "No se encontró clase AI/T (clean) transferible ni clase con 'Cartera' en el Name dentro del mismo Family Name.")
             )
-            results.append({
-                "Family Name":   fam,
-                "Name":          "",
-                "Type of Share": "",
-                "Currency":      "",
-                "Hedged":        "",
-                "MiFID FH":      "",
-                "MiFID EMT":     "",
-                "Min. Initial":  "",
-                "ISIN":          "",
-                "Prospectus AF": "",
-                "Transferable":  "",
-                "Ongoing Charge": np.nan,
-                "Soft Close":    "",
-                "Subscription Fee": "",
-                "Redemption Fee": "",
-                "VALOR ACTUAL (EUR)": _to_float_eu_money(valor_actual),
-            })
             continue
 
         # Elegir la de menor Ongoing Charge
-        chosen = chosen.sort_values("Ongoing Charge", na_position="last")
-        best = chosen.iloc[0]
+        best = chosen.sort_values("Ongoing Charge", na_position="last").iloc[0]
 
-        # Aviso si 'Transferable' viene en blanco
-        if "Transferable" in chosen.columns:
-            tf_value = str(best.get("Transferable", "")).strip()
-            if tf_value == "":
-                incidencias.append((str(fam), "El campo 'Transferable' viene EN BLANCO en la clase seleccionada."))
-
-        def fee_to_float(v):
-            if pd.isna(v): return 0.0
-            s = str(v).replace("%", "").replace(",", ".")
-            try: return float(s)
-            except Exception: return 0.0
-
-        sub_fee = best.get("Subscription Fee", 0)
-        red_fee = best.get("Redemption Fee", 0)
-        soft_close = str(best.get("Soft Close", "")).strip().lower()
-        name_val = (
-            best.get("Name") or best.get("Share Class Name")
-            or best.get("Fund Name") or best.get("Family Name")
-        )
-        emt_val  = best.get("MiFID EMT") or best.get("MIFID EMT")
-
-        if fee_to_float(sub_fee) > 0:
-            incidencias_fees.append((name_val, f"Subscription Fee es {sub_fee}"))
-        if fee_to_float(red_fee) > 0:
-            incidencias_fees.append((name_val, f"Redemption Fee es {red_fee}"))
-        if soft_close == "yes":
-            incidencias_soft.append((name_val, "Soft Close está marcado como 'Yes'"))
-
-        results.append({
-            "Family Name":    best.get("Family Name", ""),
-            "Name":           name_val,
-            "Type of Share":  best.get("Type of Share", ""),
-            "Currency":       best.get("Currency", ""),
-            "Hedged":         best.get("Hedged", ""),
-            "MiFID FH":       best.get("MiFID FH", ""),
-            "MiFID EMT":      emt_val,
-            "Min. Initial":   best.get("Min. Initial", ""),
-            "ISIN":           best.get("ISIN", ""),
-            "Prospectus AF":  best.get("Prospectus AF", ""),
-            "Transferable":   best.get("Transferable", ""),
+        out_rows.append({
+            "ISIN": best.get("ISIN",""),
+            "Name": best.get("Name") or best.get("Share Class Name") or best.get("Fund Name") or best.get("Family Name"),
+            "Type of Share": best.get("Type of Share",""),
+            "Currency": best.get("Currency",""),
+            "Hedged": best.get("Hedged",""),
             "Ongoing Charge": best.get("Ongoing Charge", np.nan),
-            "Soft Close":     best.get("Soft Close", ""),
-            "Subscription Fee": best.get("Subscription Fee", ""),
-            "Redemption Fee":   best.get("Redemption Fee", ""),
-            "VALOR ACTUAL (EUR)": _to_float_eu_money(valor_actual),
+            "Min. Initial": best.get("Min. Initial",""),
+            "MiFID FH": best.get("MiFID FH",""),
+            "MiFID EMT": best.get("MiFID EMT") or best.get("MIFID EMT",""),
+            "Prospectus AF": best.get("Prospectus AF",""),
+            "Soft Close": best.get("Soft Close",""),
+            "Subscription Fee": best.get("Subscription Fee",""),
+            "Redemption Fee": best.get("Redemption Fee",""),
+            "VALOR ACTUAL (EUR)": valor
         })
 
-    df_result = pd.DataFrame(results)
+    df_out = pd.DataFrame(out_rows)
+    if df_out.empty:
+        return df_out, incidencias
 
-    # Filtrado final: solo con OC y VALOR válido; agrupado por nombre; pesos por valor
-    ter_AI, df_AI = _recalcular_por_valor_y_agrupar_por_nombre(
-        df_result, valor_col="VALOR ACTUAL (EUR)", nombre_col="Name", require_oc=True
-    )
+    # Recalcular pesos por valor SOLO con los transformados
+    df_out = recalcular_pesos_por_valor(df_out, valor_col="VALOR ACTUAL (EUR)")
+    return df_out, incidencias
 
-    incidencias_finales = [
-        (fam, msg)
-        for fam, msg in (incidencias + incidencias_fees + incidencias_soft)
-        if not msg.startswith("Sin clase AI ni T (Clean) transferible")
-    ]
-
-    return df_AI, incidencias_finales
-
-st.subheader("Paso 3: Convertir a Cartera de Asesoramiento Independiente (Cartera II)")
-st.caption(
-    "Se mantiene Type of Share, Currency, Hedged; Transferable = 'Yes'. "
-    "Prioridad: 'AI' en Prospectus AF; si no hay, 'T' con MiFID FH = Clean/Clean Institucional. "
-    "Siempre se elige la menor Ongoing Charge. Ponderación por VALOR ACTUAL (EUR)."
-)
-
-# Botón de conversión
 if st.button("🔁 Convertir a cartera Asesoramiento Independiente"):
-    df_II, incid_AI = convertir_a_AI(df_master, st.session_state.cartera_I_raw)
-    # df_II ya viene filtrado y ponderado; TER se puede recomputar por si acaso
-    if not df_II.empty:
-        ter_II = np.nansum(df_II["Weight %"].astype(float) * df_II["Ongoing Charge"].astype(float)) / df_II["Weight %"].sum()
-    else:
-        ter_II = None
-    st.session_state.cartera_II = {"table": df_II, "ter": ter_II}
-    incidencias = st.session_state.get("incidencias", []) + incid_AI
-    st.session_state.incidencias = incidencias
+    df_II, incid_AI = convertir_a_AI(df_master, df_I)  # df_I = solo ISIN en AllFunds
+    st.session_state.cartera_II = {"table": df_II, "ter": calcular_ter_por_valor(df_II)}
+    st.session_state.incidencias = st.session_state.get("incidencias", []) + incid_AI
 
 # Mostrar Cartera II si existe
 if st.session_state.cartera_II and st.session_state.cartera_II["table"] is not None:
-    if not st.session_state.cartera_II["table"].empty:
-        mostrar_tabla_con_formato(st.session_state.cartera_II["table"], "Tabla Cartera II (AI)")
-        if st.session_state.cartera_II["ter"] is not None:
-            st.metric("📊 TER Cartera II (AI)", _fmt_ratio_eu_percent(st.session_state.cartera_II["ter"], 2))
+    dfII = st.session_state.cartera_II["table"]
+    if not dfII.empty:
+        mostrar_tabla_con_formato(dfII, "Tabla Cartera II (AI, solo transformados, pesos por valor)")
+        st.metric("📊 TER Cartera II (AI)", _fmt_ratio_eu_percent(st.session_state.cartera_II["ter"], 2) if st.session_state.cartera_II["ter"] is not None else "-")
     else:
-        st.info("No hay fondos con Ongoing Charge y/o VALOR ACTUAL (EUR) válido en Cartera II.")
+        st.info("No se pudieron transformar fondos a AI con los criterios dados.")
 
 # =========================
-# 6) Comparación I vs II (solo fondos transformables)
+# 5) Comparación: SOLO fondos transformados
 # =========================
 st.subheader("Paso 4: Comparar Cartera I vs Cartera II (solo fondos transformados)")
-if st.session_state.cartera_II and st.session_state.cartera_II["table"] is not None:
-    dfII_all = st.session_state.cartera_II["table"].copy()
-    if dfII_all.empty:
-        st.info("No hay fondos transformados a Cartera II para comparar.")
-    else:
-        # 1) Conjunto de fondos realmente transformados (por Name)
-        names_II = set(dfII_all["Name"].dropna().astype(str))
+if st.session_state.cartera_II and st.session_state.cartera_II["table"] is not None and not st.session_state.cartera_II["table"].empty:
+    dfII = st.session_state.cartera_II["table"].copy()
+    # Tomamos los Family Name de los fondos transformados
+    fams_II = set(
+        pd.merge(dfII[["ISIN"]], df_master[["ISIN","Family Name"]].assign(ISIN=lambda s: s["ISIN"].astype(str).str.upper()),
+                 how="left", on="ISIN")["Family Name"].dropna().astype(str)
+    )
 
-        # 2) Filtrar la Cartera I a esos mismos nombres usando la MERGE cruda (con VALOR y OC)
-        dfI_raw_all = st.session_state.cartera_I_raw.copy()
-        dfI_raw_sel = dfI_raw_all[dfI_raw_all["Name"].astype(str).isin(names_II)]
+    # Filtramos Cartera I RAW (ya match ISIN en maestro) a esos Family Name
+    fams_master = df_master[["ISIN","Family Name"]].copy()
+    fams_master["ISIN"] = fams_master["ISIN"].astype(str).str.upper()
+    dfI_raw = st.session_state.cartera_I_raw.copy()
+    dfI_raw["ISIN"] = dfI_raw["ISIN"].astype(str).str.upper()
+    dfI_raw = pd.merge(dfI_raw, fams_master, on="ISIN", how="left", suffixes=("","_fam"))
+    dfI_sub = dfI_raw[dfI_raw["Family Name_fam"].astype(str).isin(fams_II)].copy()
 
-        # 3) Recalcular TERs y tablas por VALOR ACTUAL (EUR), SOLO con esos fondos y con OC conocido
-        ter_I_sel, tabla_I_sel = _recalcular_por_valor_y_agrupar_por_nombre(
-            dfI_raw_sel, valor_col="VALOR ACTUAL (EUR)", nombre_col="Name", require_oc=True
-        )
+    # Recalcular pesos y TER en el subset de I y usar II tal cual
+    dfI_sub = recalcular_pesos_por_valor(dfI_sub, valor_col="VALOR ACTUAL (EUR)")
+    ter_I_sub = calcular_ter_por_valor(dfI_sub)
+    ter_II_sub = st.session_state.cartera_II["ter"]  # ya viene ponderado por valor en el subset transformado
 
-        # Cartera II ya viene filtrada a OC conocido y con pesos por valor;
-        # por simetría, la volvemos a pasar por la misma rutina (no cambia)
-        ter_II_sel, tabla_II_sel = _recalcular_por_valor_y_agrupar_por_nombre(
-            dfII_all[dfII_all["Name"].astype(str).isin(names_II)],
-            valor_col="VALOR ACTUAL (EUR)", nombre_col="Name", require_oc=True
-        )
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("#### Cartera I (solo fondos con transformación AI)")
+        mostrar_tabla_con_formato(dfI_sub, "Tabla Cartera I (subset comparable)")
+        st.metric("TER medio ponderado", _fmt_ratio_eu_percent(ter_I_sub, 2) if ter_I_sub is not None else "-")
+    with c2:
+        st.markdown("#### Cartera II (AI)")
+        mostrar_tabla_con_formato(dfII, "Tabla Cartera II (AI)")
+        st.metric("TER medio ponderado", _fmt_ratio_eu_percent(ter_II_sub, 2) if ter_II_sub is not None else "-")
 
-        if tabla_I_sel.empty or tabla_II_sel.empty:
-            st.info("No hay intersección válida entre Cartera I y Cartera II con Ongoing Charge y Valor actual.")
-        else:
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown("#### Cartera I (solo fondos convertidos)")
-                st.metric("TER medio ponderado", _fmt_ratio_eu_percent(ter_I_sel, 2) if ter_I_sel is not None else "-")
-                mostrar_tabla_con_formato(tabla_I_sel, "Tabla Cartera I (convertibles)")
-
-            with c2:
-                st.markdown("#### Cartera II (AI)")
-                st.metric("TER medio ponderado", _fmt_ratio_eu_percent(ter_II_sel, 2) if ter_II_sel is not None else "-")
-                mostrar_tabla_con_formato(tabla_II_sel, "Tabla Cartera II (AI)")
-
-            if ter_I_sel is not None and ter_II_sel is not None:
-                diff = ter_II_sel - ter_I_sel
-                st.markdown("---")
-                st.subheader("Diferencia de TER (II − I) en fondos convertidos")
-                st.metric("Diferencia", _fmt_ratio_eu_percent(diff, 2))
+    if ter_I_sub is not None and ter_II_sub is not None:
+        st.markdown("---")
+        st.subheader("Diferencia de TER (II − I) en fondos transformados")
+        st.metric("Diferencia", _fmt_ratio_eu_percent(ter_II_sub - ter_I_sub, 2))
 else:
     st.info("Primero convierte a Cartera II para ver la comparativa.")
 
 # =========================
-# 7) Incidencias
+# 6) Incidencias
 # =========================
 if st.session_state.get("incidencias"):
     st.subheader("⚠️ Incidencias detectadas")
     for fam, msg in st.session_state.incidencias:
         st.error(f"{fam}: {msg}")
+
 
