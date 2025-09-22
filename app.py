@@ -101,12 +101,17 @@ def pretty_table(df_in: pd.DataFrame) -> pd.DataFrame:
 def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
     """
     Genera Cartera II con el MISMO ORDEN y MISMO Nº de filas que Cartera I.
+    Regla:
+      1) Buscar clase con Prospectus AF que contenga 'AI' y Transferable == 'Yes'
+      2) Si no hay, buscar clase con 'T' y Transferable == 'Yes' y MiFID FH 'clean'
+      3) Elegir siempre la de menor Ongoing Charge
+    Además:
+      - Si la clase elegida tiene 'Transferable' en blanco -> añadir incidencia (pero dejarlo en blanco).
     """
     results = []
     incidencias = []
 
     clean_set = {"clean", "clean institucional", "clean institutional"}
-
     incidencias_fees = []
     incidencias_soft = []
 
@@ -117,43 +122,56 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
         hed = row.get("Hedged")
         w   = row.get("Weight %", 0.0)
 
-        # Filtrar todas las del mismo Family Name y Type/Currency/Hedged
+        # Filtrar mismas características básicas
         subset = df_master[
             (df_master["Family Name"] == fam) &
             (df_master["Type of Share"] == tos) &
             (df_master["Currency"] == cur) &
             (df_master["Hedged"] == hed)
         ]
-      # 1. Buscar AI (en Prospectus AF) y Transferable = Yes (blancos se mantienen como "")
-        ai_match = subset[subset["Prospectus AF"].apply(lambda x: _has_code(x, "AI"))]
-            if "Transferable" in ai_match.columns:
-                ai_match["Transferable"] = ai_match["Transferable"].fillna("").astype(str).str.strip()
-                ai_match_yes = ai_match[ai_match["Transferable"].str.lower() == "yes"]
-            else:
-                ai_match_yes = ai_match
 
+        # --- 1) AI + Transferable == Yes (blancos se mantienen como "")
+        ai_match = subset[subset["Prospectus AF"].apply(lambda x: _has_code(x, "AI"))]
+        if "Transferable" in ai_match.columns:
+            ai_match = ai_match.copy()
+            ai_match["Transferable"] = ai_match["Transferable"].fillna("").astype(str).str.strip()
+            ai_match_yes = ai_match[ai_match["Transferable"].str.lower() == "yes"]
+        else:
+            ai_match_yes = ai_match
 
         chosen = None
         match_type = ""
+
         if not ai_match_yes.empty:
             chosen = ai_match_yes
             match_type = "AI"
         else:
-            # 2. Buscar clase T/Clean transferible y MiFID FH clean
-            t_match = subset[
-                subset["Prospectus AF"].apply(lambda x: _has_code(x, "T"))
-            ]
-            t_match = t_match[t_match["Transferable"] == "Yes"]
-            # Y MiFID FH clean
-            if "MiFID FH" in t_match.columns:
-                t_match = t_match[t_match["MiFID FH"].str.lower().isin(clean_set)]
-            if not t_match.empty:
-                chosen = t_match
+            # --- 2) T + Transferable == Yes + MiFID FH clean
+            t_match = subset[subset["Prospectus AF"].apply(lambda x: _has_code(x, "T"))]
+            if "Transferable" in t_match.columns:
+                t_match = t_match.copy()
+                t_match["Transferable"] = t_match["Transferable"].fillna("").astype(str).str.strip()
+                t_match_yes = t_match[t_match["Transferable"].str.lower() == "yes"]
+            else:
+                t_match_yes = t_match
+
+            if "MiFID FH" in t_match_yes.columns:
+                # tolerante a NaN antes de lower()
+                t_match_yes = t_match_yes.copy()
+                t_match_yes["MiFID FH"] = t_match_yes["MiFID FH"].fillna("").astype(str)
+                t_match_yes = t_match_yes[t_match_yes["MiFID FH"].str.lower().isin(clean_set)]
+
+            if not t_match_yes.empty:
+                chosen = t_match_yes
                 match_type = "T Clean"
+
         found_cartera = chosen is not None and not chosen.empty
 
         if not found_cartera:
-            incidencias.append((str(fam), "Sin clase AI ni T (Clean) transferible con misma (Type of Share/Currency/Hedged) ni clase 'cartera'"))
+            incidencias.append(
+                (str(fam),
+                 "Sin clase AI ni T (Clean) transferible con misma (Type of Share/Currency/Hedged) ni clase 'cartera'")
+            )
             results.append({
                 "Family Name":   fam,
                 "Name":          "",
@@ -174,25 +192,34 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
             })
             continue
 
+        # Elegir la de menor Ongoing Charge
         chosen = chosen.sort_values("Ongoing Charge", na_position="last")
         best = chosen.iloc[0]
 
-        name_val = best.get("Name") or best.get("Share Class Name") or best.get("Fund Name") or best.get("Family Name")
+        name_val = (
+            best.get("Name")
+            or best.get("Share Class Name")
+            or best.get("Fund Name")
+            or best.get("Family Name")
+        )
         emt_val  = best.get("MiFID EMT") or best.get("MIFID EMT")
 
-        # Recoger comisiones y soft close
+        # --- Avisos y normalizaciones auxiliares
         sub_fee = best.get("Subscription Fee", 0)
         red_fee = best.get("Redemption Fee", 0)
         soft_close = str(best.get("Soft Close", "")).strip().lower()
+
         # Aviso si 'Transferable' viene en blanco en la clase elegida
         if "Transferable" in chosen.columns:
             tf_value = str(best.get("Transferable", "")).strip()
             if tf_value == "":
-                incidencias.append((str(fam), "El campo 'Transferable' viene EN BLANCO en la clase seleccionada."))
+                incidencias.append(
+                    (str(fam), "El campo 'Transferable' viene EN BLANCO en la clase seleccionada.")
+                )
 
         def fee_to_float(v):
             if pd.isna(v): return 0.0
-            s = str(v).replace("%","").replace(",",".")
+            s = str(v).replace("%", "").replace(",", ".")
             try:
                 return float(s)
             except Exception:
@@ -206,28 +233,31 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
         if red_fee_f > 0:
             incidencias_fees.append((name_val, f"Redemption Fee es {red_fee}"))
         if soft_close == "yes":
-            incidencias_soft.append((name_val, f"Soft Close está marcado como 'Yes'"))
+            incidencias_soft.append((name_val, "Soft Close está marcado como 'Yes'"))
 
+        # Fila resultado
         results.append({
-            "Family Name":   best.get("Family Name", ""),
-            "Name":          name_val,
-            "Type of Share": best.get("Type of Share", ""),
-            "Currency":      best.get("Currency", ""),
-            "Hedged":        best.get("Hedged", ""),
-            "MiFID FH":      best.get("MiFID FH", ""),
-            "MiFID EMT":     emt_val,
-            "Min. Initial":  best.get("Min. Initial", ""),
-            "ISIN":          best.get("ISIN", ""),
-            "Prospectus AF": best.get("Prospectus AF", ""),
-            "Transferable":  best.get("Transferable", ""),
+            "Family Name":    best.get("Family Name", ""),
+            "Name":           name_val,
+            "Type of Share":  best.get("Type of Share", ""),
+            "Currency":       best.get("Currency", ""),
+            "Hedged":         best.get("Hedged", ""),
+            "MiFID FH":       best.get("MiFID FH", ""),
+            "MiFID EMT":      emt_val,
+            "Min. Initial":   best.get("Min. Initial", ""),
+            "ISIN":           best.get("ISIN", ""),
+            "Prospectus AF":  best.get("Prospectus AF", ""),
+            "Transferable":   best.get("Transferable", ""),
             "Ongoing Charge": best.get("Ongoing Charge", np.nan),
-            "Soft Close":    best.get("Soft Close", ""),
+            "Soft Close":     best.get("Soft Close", ""),
             "Subscription Fee": best.get("Subscription Fee", ""),
-            "Redemption Fee": best.get("Redemption Fee", ""),
-            "Weight %":      float(w) if pd.notnull(w) else 0.0
+            "Redemption Fee":   best.get("Redemption Fee", ""),
+            "Weight %":       float(w) if pd.notnull(w) else 0.0
         })
 
+    # Salida
     df_result = pd.DataFrame(results)
+
     # Filtrar incidencias que no quieres mostrar
     incidencias_finales = [
         (fam, msg)
