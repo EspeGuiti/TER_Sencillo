@@ -172,11 +172,15 @@ def _fmt_ratio_eu_percent(x, decimals=2):
     return f"{x:.{decimals}%}".replace(".", ",")
 
 def _norm_txt(s):
+    """Normaliza texto de celdas para comparar cabeceras de forma robusta."""
     if pd.isna(s):
         return ""
-    s = str(s).strip()
-    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
-    return s.lower()
+    s = str(s)
+    s = s.replace("\xa0", " ")              # NBSP -> espacio normal
+    s = unicodedata.normalize("NFKD", s)
+    s = s.encode("ascii", "ignore").decode("ascii")  # sin acentos
+    s = re.sub(r"\s+", " ", s).strip().lower()      # colapsa espacios
+    return s
 
 def _find_header_cell(df_any, targets):
     """
@@ -264,15 +268,32 @@ if "Transferable" not in df_master_raw.columns:
     st.warning("El maestro no tiene columna 'Transferable'. Los blancos se mantendrán como '' y solo filtrará 'Yes' cuando exista.")
 
 # --- Cargar Excel de CARTERA en crudo, sin asumir cabeceras ---
+# --- Cargar Excel de CARTERA en crudo, sin asumir cabeceras ---
 try:
     df_any = pd.read_excel(weights_file, header=None)
 except Exception as e:
     st.error(f"No se pudo leer la cartera: {e}")
     st.stop()
 
-# Solo buscamos ISIN y VALOR ACTUAL (EUR)
+# Variantes admitidas para VALOR ACTUAL (EUR)
 targets_isin  = {"isin"}
-targets_valor = {"valor actual (eur)"}  # nombre exacto confirmado
+targets_valor = {
+    "valor actual (eur)",
+    "valor actual(eur)",
+    "valor actual eur",
+    "valor actual €",
+    "valor actual€",
+    "valor actual",
+}
+
+def _find_header_cell(df_any, targets):
+    """Busca la primera celda cuyo texto normalizado coincida con alguno de 'targets'."""
+    for r in range(df_any.shape[0]):
+        for c in range(df_any.shape[1]):
+            cell = _norm_txt(df_any.iat[r, c])
+            if cell in targets:
+                return r, c
+    return None, None
 
 r_isin,  c_isin  = _find_header_cell(df_any, targets_isin)
 r_valor, c_valor = _find_header_cell(df_any, targets_valor)
@@ -285,39 +306,51 @@ if r_isin is None or r_valor is None:
 col_isin_vals  = df_any.iloc[r_isin+1:,  c_isin].reset_index(drop=True)
 col_valor_vals = df_any.iloc[r_valor+1:, c_valor].reset_index(drop=True)
 
-# Quitar filas totalmente vacías al final (ambas columnas vacías)
+# --- Quitar el TOTAL al final de la columna de valor ---
+# 1) Recorta filas vacías al final (ambas columnas vacías)
 while len(col_isin_vals) > 0 and pd.isna(col_isin_vals.iloc[-1]) and pd.isna(col_valor_vals.iloc[-1]):
     col_isin_vals  = col_isin_vals.iloc[:-1]
     col_valor_vals = col_valor_vals.iloc[:-1]
 
-# Si la última fila de VALOR ACTUAL (EUR) es el total (suele venir sin ISIN), descártala
-if len(col_valor_vals) > 0 and (len(col_isin_vals) == 0 or pd.isna(col_isin_vals.iloc[-1])):
+# 2) Si la última fila parece el TOTAL (sin ISIN o con texto 'total'), descártala
+def _is_total_row(isin_cell, valor_cell):
+    a = _norm_txt(isin_cell)
+    b = _norm_txt(valor_cell)
+    return (a in {"", "total", "totales"}) or (b in {"total", "totales"})
+
+if len(col_valor_vals) > 0 and _is_total_row(
+    col_isin_vals.iloc[-1] if len(col_isin_vals) else "", col_valor_vals.iloc[-1]
+):
+    col_isin_vals  = col_isin_vals.iloc[:-1]
     col_valor_vals = col_valor_vals.iloc[:-1]
-    if len(col_isin_vals) > len(col_valor_vals):
-        col_isin_vals = col_isin_vals.iloc[:len(col_valor_vals)]
 
 # Alinear longitudes por seguridad
 min_len = min(len(col_isin_vals), len(col_valor_vals))
 col_isin_vals  = col_isin_vals.iloc[:min_len]
 col_valor_vals = col_valor_vals.iloc[:min_len]
 
-# Construir DF de cartera con las dos columnas
+# Construir DF cartera
 df_weights_raw = pd.DataFrame({
     "ISIN": col_isin_vals,
     "VALOR ACTUAL (EUR)": col_valor_vals
 })
 
-# Limpieza básica
+# Limpieza
 df_weights_raw.dropna(how="all", inplace=True)
 df_weights_raw = df_weights_raw[df_weights_raw["ISIN"].notna()].copy()
 
-# Normaliza VALOR ACTUAL (EUR) al formato numérico y elimina no positivos
+# Normaliza VALOR ACTUAL (EUR) a número y elimina no-positivos
 df_weights_raw["VALOR ACTUAL (EUR)"] = df_weights_raw["VALOR ACTUAL (EUR)"].apply(_to_float_eu_money)
 df_weights_raw = df_weights_raw[df_weights_raw["VALOR ACTUAL (EUR)"].notna()]
 
-# Consolidar duplicados por ISIN: SUMA del valor actual (los pesos originales ya no se usan)
+# Consolidar duplicados por ISIN (sumamos el valor actual). ¡No usamos los "Peso %" originales!
 df_weights_raw["ISIN"] = df_weights_raw["ISIN"].astype(str).str.strip().str.upper()
 df_weights = df_weights_raw.groupby("ISIN", as_index=False)["VALOR ACTUAL (EUR)"].sum()
+
+# (Opcional) Debug visual para confirmar detección
+st.caption(f"Cabecera ISIN encontrada en fila {r_isin+1}, columna {c_isin+1}.  "
+           f"Cabecera VALOR ACTUAL (EUR) en fila {r_valor+1}, columna {c_valor+1}.  "
+           f"Registros cartera leídos: {len(df_weights)}")
 
 def merge_cartera_con_maestro(df_master, df_weights):
     """
