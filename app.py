@@ -584,28 +584,54 @@ if st.session_state.cartera_II and st.session_state.cartera_II["table"] is not N
         st.info("No hay fondos con Ongoing Charge y/o VALOR ACTUAL (EUR) válido en Cartera II.")
 
 # =========================
-# 6) Comparación I vs II
+# 6) Comparación I vs II (solo fondos transformables)
 # =========================
-st.subheader("Paso 4: Comparar Cartera I vs Cartera II")
-if (
-    st.session_state.cartera_I and st.session_state.cartera_I["ter"] is not None and
-    st.session_state.cartera_II and st.session_state.cartera_II["ter"] is not None
-):
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("#### Cartera I (filtrada)")
-        st.metric("TER medio ponderado", _fmt_ratio_eu_percent(st.session_state.cartera_I["ter"], 2))
-        mostrar_tabla_con_formato(st.session_state.cartera_I["table"], "Tabla Cartera I")
+st.subheader("Paso 4: Comparar Cartera I vs Cartera II (solo fondos transformados)")
+if st.session_state.cartera_II and st.session_state.cartera_II["table"] is not None:
+    dfII_all = st.session_state.cartera_II["table"].copy()
+    if dfII_all.empty:
+        st.info("No hay fondos transformados a Cartera II para comparar.")
+    else:
+        # 1) Conjunto de fondos realmente transformados (por Name)
+        names_II = set(dfII_all["Name"].dropna().astype(str))
 
-    with c2:
-        st.markdown("#### Cartera II (AI)")
-        st.metric("TER medio ponderado", _fmt_ratio_eu_percent(st.session_state.cartera_II["ter"], 2))
-        mostrar_tabla_con_formato(st.session_state.cartera_II["table"], "Tabla Cartera II (AI)")
+        # 2) Filtrar la Cartera I a esos mismos nombres usando la MERGE cruda (con VALOR y OC)
+        dfI_raw_all = st.session_state.cartera_I_raw.copy()
+        dfI_raw_sel = dfI_raw_all[dfI_raw_all["Name"].astype(str).isin(names_II)]
 
-    diff = st.session_state.cartera_II["ter"] - st.session_state.cartera_I["ter"]
-    st.markdown("---")
-    st.subheader("Diferencia de TER (II − I)")
-    st.metric("Diferencia", _fmt_ratio_eu_percent(diff, 2))
+        # 3) Recalcular TERs y tablas por VALOR ACTUAL (EUR), SOLO con esos fondos y con OC conocido
+        ter_I_sel, tabla_I_sel = _recalcular_por_valor_y_agrupar_por_nombre(
+            dfI_raw_sel, valor_col="VALOR ACTUAL (EUR)", nombre_col="Name", require_oc=True
+        )
+
+        # Cartera II ya viene filtrada a OC conocido y con pesos por valor;
+        # por simetría, la volvemos a pasar por la misma rutina (no cambia)
+        ter_II_sel, tabla_II_sel = _recalcular_por_valor_y_agrupar_por_nombre(
+            dfII_all[dfII_all["Name"].astype(str).isin(names_II)],
+            valor_col="VALOR ACTUAL (EUR)", nombre_col="Name", require_oc=True
+        )
+
+        if tabla_I_sel.empty or tabla_II_sel.empty:
+            st.info("No hay intersección válida entre Cartera I y Cartera II con Ongoing Charge y Valor actual.")
+        else:
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("#### Cartera I (solo fondos convertidos)")
+                st.metric("TER medio ponderado", _fmt_ratio_eu_percent(ter_I_sel, 2) if ter_I_sel is not None else "-")
+                mostrar_tabla_con_formato(tabla_I_sel, "Tabla Cartera I (convertibles)")
+
+            with c2:
+                st.markdown("#### Cartera II (AI)")
+                st.metric("TER medio ponderado", _fmt_ratio_eu_percent(ter_II_sel, 2) if ter_II_sel is not None else "-")
+                mostrar_tabla_con_formato(tabla_II_sel, "Tabla Cartera II (AI)")
+
+            if ter_I_sel is not None and ter_II_sel is not None:
+                diff = ter_II_sel - ter_I_sel
+                st.markdown("---")
+                st.subheader("Diferencia de TER (II − I) en fondos convertidos")
+                st.metric("Diferencia", _fmt_ratio_eu_percent(diff, 2))
+else:
+    st.info("Primero convierte a Cartera II para ver la comparativa.")
 
 # =========================
 # 7) Incidencias
