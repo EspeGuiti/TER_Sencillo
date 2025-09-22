@@ -105,7 +105,6 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
     results = []
     incidencias = []
 
-    has_ia_col = "Prospectus AF - Independent Advice (IA)*" in df_master.columns
     clean_set = {"clean", "clean institucional", "clean institutional"}
 
     incidencias_fees = []
@@ -125,11 +124,9 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
             (df_master["Currency"] == cur) &
             (df_master["Hedged"] == hed)
         ]
-        # 1. Buscar AI (en Prospectus AF)
+        # 1. Buscar AI (en Prospectus AF) y Transferable = Yes
         ai_match = subset[subset["Prospectus AF"].apply(lambda x: _has_code(x, "AI"))]
-        # y Transferable = Yes si existe la columna
-        if "Transferable" in subset.columns:
-            ai_match = ai_match[ai_match["Transferable"] == "Yes"]
+        ai_match = ai_match[ai_match["Transferable"] == "Yes"]
 
         chosen = None
         match_type = ""
@@ -141,8 +138,7 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
             t_match = subset[
                 subset["Prospectus AF"].apply(lambda x: _has_code(x, "T"))
             ]
-            if "Transferable" in subset.columns:
-                t_match = t_match[t_match["Transferable"] == "Yes"]
+            t_match = t_match[t_match["Transferable"] == "Yes"]
             # Y MiFID FH clean
             if "MiFID FH" in t_match.columns:
                 t_match = t_match[t_match["MiFID FH"].str.lower().isin(clean_set)]
@@ -155,7 +151,7 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
             incidencias.append((str(fam), "Sin clase AI ni T (Clean) transferible con misma (Type of Share/Currency/Hedged) ni clase 'cartera'"))
             results.append({
                 "Family Name":   fam,
-                "Name":          fam,
+                "Name":          "",
                 "Type of Share": "",
                 "Currency":      "",
                 "Hedged":        "",
@@ -203,18 +199,18 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
             incidencias_soft.append((name_val, f"Soft Close está marcado como 'Yes'"))
 
         results.append({
-            "Family Name":   best.get("Family Name"),
+            "Family Name":   best.get("Family Name", ""),
             "Name":          name_val,
-            "Type of Share": best.get("Type of Share"),
-            "Currency":      best.get("Currency"),
-            "Hedged":        best.get("Hedged"),
-            "MiFID FH":      best.get("MiFID FH"),
+            "Type of Share": best.get("Type of Share", ""),
+            "Currency":      best.get("Currency", ""),
+            "Hedged":        best.get("Hedged", ""),
+            "MiFID FH":      best.get("MiFID FH", ""),
             "MiFID EMT":     emt_val,
-            "Min. Initial":  best.get("Min. Initial"),
-            "ISIN":          best.get("ISIN"),
-            "Prospectus AF": best.get("Prospectus AF"),
-            "Transferable":  "Yes",
-            "Ongoing Charge": best.get("Ongoing Charge"),
+            "Min. Initial":  best.get("Min. Initial", ""),
+            "ISIN":          best.get("ISIN", ""),
+            "Prospectus AF": best.get("Prospectus AF", ""),
+            "Transferable":  best.get("Transferable", ""),
+            "Ongoing Charge": best.get("Ongoing Charge", np.nan),
             "Soft Close":    best.get("Soft Close", ""),
             "Subscription Fee": best.get("Subscription Fee", ""),
             "Redemption Fee": best.get("Redemption Fee", ""),
