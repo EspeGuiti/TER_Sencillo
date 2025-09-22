@@ -173,13 +173,11 @@ def _recalcular_por_valor_y_agrupar_por_nombre(df, *, valor_col="VALOR ACTUAL (E
 
 def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
     """
-    Genera Cartera II con el MISMO ORDEN y MISMO Nº de filas que Cartera I.
-    Regla:
-      1) Buscar clase con Prospectus AF que contenga 'AI' y Transferable == 'Yes'
-      2) Si no hay, buscar clase con 'T' y Transferable == 'Yes' y MiFID FH 'clean'
-      3) Elegir siempre la de menor Ongoing Charge
-    Además:
-      - Si la clase elegida tiene 'Transferable' en blanco -> añadir incidencia (pero dejarlo en blanco).
+    Convierte Cartera I a clases AI/T (Clean) usando la lógica previa,
+    arrastra VALOR ACTUAL (EUR), y al final:
+      - Filtra a los que tienen Ongoing Charge
+      - Recalcula pesos por VALOR ACTUAL (EUR)
+      - Agrupa por Name (o Family Name si no hay Name)
     """
     results = []
     incidencias = []
@@ -194,8 +192,8 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
         cur = row.get("Currency")
         hed = row.get("Hedged")
         w   = row.get("Weight %", 0.0)
+        valor_actual = row.get("VALOR ACTUAL (EUR)")
 
-        # Filtrar mismas características básicas
         subset = df_master[
             (df_master["Family Name"] == fam) &
             (df_master["Type of Share"] == tos) &
@@ -203,7 +201,7 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
             (df_master["Hedged"] == hed)
         ]
 
-        # --- 1) AI + Transferable == Yes (blancos se mantienen como "")
+        # 1) AI + Transferable==Yes (respetando blancos "")
         ai_match = subset[subset["Prospectus AF"].apply(lambda x: _has_code(x, "AI"))]
         if "Transferable" in ai_match.columns:
             ai_match = ai_match.copy()
@@ -219,7 +217,7 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
             chosen = ai_match_yes
             match_type = "AI"
         else:
-            # --- 2) T + Transferable == Yes + MiFID FH clean
+            # 2) T + Transferable==Yes + MiFID FH clean
             t_match = subset[subset["Prospectus AF"].apply(lambda x: _has_code(x, "T"))]
             if "Transferable" in t_match.columns:
                 t_match = t_match.copy()
@@ -229,7 +227,6 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
                 t_match_yes = t_match
 
             if "MiFID FH" in t_match_yes.columns:
-                # tolerante a NaN antes de lower()
                 t_match_yes = t_match_yes.copy()
                 t_match_yes["MiFID FH"] = t_match_yes["MiFID FH"].fillna("").astype(str)
                 t_match_yes = t_match_yes[t_match_yes["MiFID FH"].str.lower().isin(clean_set)]
@@ -245,6 +242,7 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
                 (str(fam),
                  "Sin clase AI ni T (Clean) transferible con misma (Type of Share/Currency/Hedged) ni clase 'cartera'")
             )
+            # Guardamos fila “vacía” con valor para no perder el dato de valor actual si luego lo necesitas
             results.append({
                 "Family Name":   fam,
                 "Name":          "",
@@ -261,6 +259,7 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
                 "Soft Close":    "",
                 "Subscription Fee": "",
                 "Redemption Fee": "",
+                "VALOR ACTUAL (EUR)": _to_float_eu_money(valor_actual),
                 "Weight %":      float(w) if pd.notnull(w) else 0.0
             })
             continue
@@ -277,38 +276,29 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
         )
         emt_val  = best.get("MiFID EMT") or best.get("MIFID EMT")
 
-        # --- Avisos y normalizaciones auxiliares
         sub_fee = best.get("Subscription Fee", 0)
         red_fee = best.get("Redemption Fee", 0)
         soft_close = str(best.get("Soft Close", "")).strip().lower()
 
-        # Aviso si 'Transferable' viene en blanco en la clase elegida
+        # Aviso si 'Transferable' viene en blanco
         if "Transferable" in chosen.columns:
             tf_value = str(best.get("Transferable", "")).strip()
             if tf_value == "":
-                incidencias.append(
-                    (str(fam), "El campo 'Transferable' viene EN BLANCO en la clase seleccionada.")
-                )
+                incidencias.append((str(fam), "El campo 'Transferable' viene EN BLANCO en la clase seleccionada."))
 
         def fee_to_float(v):
             if pd.isna(v): return 0.0
             s = str(v).replace("%", "").replace(",", ".")
-            try:
-                return float(s)
-            except Exception:
-                return 0.0
+            try: return float(s)
+            except Exception: return 0.0
 
-        sub_fee_f = fee_to_float(sub_fee)
-        red_fee_f = fee_to_float(red_fee)
-
-        if sub_fee_f > 0:
+        if fee_to_float(sub_fee) > 0:
             incidencias_fees.append((name_val, f"Subscription Fee es {sub_fee}"))
-        if red_fee_f > 0:
+        if fee_to_float(red_fee) > 0:
             incidencias_fees.append((name_val, f"Redemption Fee es {red_fee}"))
         if soft_close == "yes":
             incidencias_soft.append((name_val, "Soft Close está marcado como 'Yes'"))
 
-        # Fila resultado
         results.append({
             "Family Name":    best.get("Family Name", ""),
             "Name":           name_val,
@@ -325,19 +315,27 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I: pd.DataFrame):
             "Soft Close":     best.get("Soft Close", ""),
             "Subscription Fee": best.get("Subscription Fee", ""),
             "Redemption Fee":   best.get("Redemption Fee", ""),
+            "VALOR ACTUAL (EUR)": _to_float_eu_money(valor_actual),
             "Weight %":       float(w) if pd.notnull(w) else 0.0
         })
 
-    # Salida
     df_result = pd.DataFrame(results)
 
-    # Filtrar incidencias que no quieres mostrar
+    # --- Filtrado final por OC y recalculo por VALOR ACTUAL (EUR), agrupando por nombre ---
+    ter_AI, df_AI = _recalcular_por_valor_y_agrupar_por_nombre(
+        df_result, valor_col="VALOR ACTUAL (EUR)", nombre_col="Name", require_oc=True
+    )
+
+    # Incidencias extra (no mostramos la de “sin clase …” si no quieres)
     incidencias_finales = [
         (fam, msg)
         for fam, msg in (incidencias + incidencias_fees + incidencias_soft)
         if not msg.startswith("Sin clase AI ni T (Clean) transferible")
     ]
-    return df_result, incidencias_finales
+
+    # Devolvemos la tabla ya filtrada/agrupada y el set de incidencias
+    # Si en tu app esperas solo (df, incidencias), mantén el contrato:
+    return df_AI, incidencias_finales
 
 def mostrar_tabla_con_formato(df_in, title):
     st.markdown(f"#### {title}")
