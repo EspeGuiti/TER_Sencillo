@@ -263,6 +263,23 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I_filtrada: pd.DataFrame)
             if pd.notna(v) and "cartera" in str(v).lower():
                 return True
         return False
+        # --- Helpers EMT ---
+    def _emt_str(x):
+        s = "" if pd.isna(x) else str(x)
+        s = s.replace(" ", "").strip().upper()
+        return s
+
+    def _emt_is_blocked(x):
+        # Bloquear 'NN' en las dos primeras posiciones
+        s = _emt_str(x)
+        return len(s) >= 2 and s[0] == "N" and s[1] == "N"
+
+    def _filter_not_blocked(df):
+        # Aplica el bloqueo 'NN' si la columna existe (MiFID EMT o MIFID EMT)
+        cols = [c for c in ("MiFID EMT", "MIFID EMT") if c in df.columns]
+        if not cols:
+            return df
+        return df[~df[cols[0]].apply(_emt_is_blocked)]
 
     for _, row in df_cartera_I_filtrada.iterrows():
         fam = row.get("Family Name")
@@ -285,6 +302,7 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I_filtrada: pd.DataFrame)
         ai = subset[subset["Prospectus AF"].apply(lambda x: _has_code(x, "AI"))]
         if "Transferable" in ai.columns:
             ai = ai[ai["Transferable"].fillna("").astype(str).str.strip().str.lower() == "yes"]
+        ai = _filter_not_blocked(ai)  # <-- bloquea NN
         if not ai.empty:
             chosen = ai
 
@@ -295,13 +313,15 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I_filtrada: pd.DataFrame)
                 t = t[t["Transferable"].fillna("").astype(str).str.strip().str.lower() == "yes"]
             if "MiFID FH" in t.columns:
                 t = t[t["MiFID FH"].fillna("").astype(str).str.lower().isin(clean_set)]
+            t = _filter_not_blocked(t)  # <-- bloquea NN
             if not t.empty:
                 chosen = t
 
-        # 3) Name que contenga 'Cartera' dentro del MISMO Family Name
+        # 3) Name que contenga 'Cartera'
         if chosen is None or chosen.empty:
             fam_pool = df_master[df_master["Family Name"] == fam].copy()
             cartera_pool = fam_pool[fam_pool.apply(_name_has_cartera, axis=1)]
+            cartera_pool = _filter_not_blocked(cartera_pool)  # <-- bloquea NN
             if not cartera_pool.empty:
                 chosen = cartera_pool
 
@@ -315,19 +335,29 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I_filtrada: pd.DataFrame)
 
         # Elegir la de menor Ongoing Charge
         best = chosen.sort_values("Ongoing Charge", na_position="last").iloc[0]
-
-        # 🔎 Validación adicional: Min. Initial superior a 10 millones (heurística por longitud de texto)
+        
+        # --- AVISOS Y VALIDACIONES ANTES DE AÑADIR LA FILA ---
+        
+        # Nombre y EMT de la clase elegida (para reutilizar)
+        name_val = (
+            best.get("Name")
+            or best.get("Share Class Name")
+            or best.get("Fund Name")
+            or best.get("Family Name")
+            or "(sin nombre)"
+        )
+        emt_val = best.get("MiFID EMT") or best.get("MIFID EMT")
+        
+        # 1) Aviso EMT: si la 1ª letra es 'N' -> solo profesional
+        s_emt = _emt_str(emt_val)  # ← recuerda tener el helper añadido (paso A)
+        if len(s_emt) >= 1 and s_emt[0] == "N":
+            incidencias.append((name_val, "Clase solo disponible para cliente profesional"))
+        
+        # 2) Min. Initial > 10 millones (heurística por longitud)
         min_initial = str(best.get("Min. Initial", "")).strip()
         if len(min_initial) > 11:
-            nombre_best = (
-                best.get("Name")
-                or best.get("Share Class Name")
-                or best.get("Fund Name")
-                or best.get("Family Name")
-                or "(sin nombre)"
-            )
             incidencias.append(
-                (nombre_best, f"El mínimo inicial de contratación del fondo es de '{min_initial}', consultar.")
+                (name_val, f"El mínimo inicial de contratación del fondo '{name_val}' es de '{min_initial}', consultar.")
             )
 
         out_rows.append({
