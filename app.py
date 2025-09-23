@@ -247,6 +247,11 @@ st.caption("Se busca clase apta para Asesoramiento Indendiente, manteniendo mism
 def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I_filtrada: pd.DataFrame):
     """
     Convierte Cartera I a clases aptas para Asesoramiento Independiente, manteniendo mismas características.
+    Orden de búsqueda:
+      1) AI + Transferable == 'Yes'
+      2) T  + Transferable == 'Yes' y MiFID FH 'clean'
+      3) Cualquier clase del MISMO Family Name cuyo Name contenga 'Cartera'
+    Copia el VALOR ACTUAL (EUR) del fondo original y recalcula pesos por valor solo con los transformados.
     """
     clean_set = {"clean", "clean institucional", "clean institutional"}
     out_rows = []
@@ -260,10 +265,10 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I_filtrada: pd.DataFrame)
         return False
 
     for _, row in df_cartera_I_filtrada.iterrows():
-        fam   = row.get("Family Name")
-        tos   = row.get("Type of Share")
-        cur   = row.get("Currency")
-        hed   = row.get("Hedged")
+        fam = row.get("Family Name")
+        tos = row.get("Type of Share")
+        cur = row.get("Currency")
+        hed = row.get("Hedged")
         valor = row.get("VALOR ACTUAL (EUR)")
 
         # Subconjunto por mismas características
@@ -293,44 +298,52 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I_filtrada: pd.DataFrame)
             if not t.empty:
                 chosen = t
 
-        # 3) Cualquier clase del MISMO Family Name cuyo Name contenga 'Cartera'
+        # 3) Name que contenga 'Cartera' dentro del MISMO Family Name
         if chosen is None or chosen.empty:
             fam_pool = df_master[df_master["Family Name"] == fam].copy()
             cartera_pool = fam_pool[fam_pool.apply(_name_has_cartera, axis=1)]
             if not cartera_pool.empty:
                 chosen = cartera_pool
 
-        # Si aún no hay nada, incidencia y continuar
+        # Si no hay clase apta
         if chosen is None or chosen.empty:
             incidencias.append(
-                (row.get("Name","(sin nombre)"),
-                 "No se encontró clase apta para Asesoramiento Independiente con mismas características")
+                (row.get("Name", "(sin nombre)"),
+                 "Para este fondo no se ha encontrado una clase que cumpla los criterios de Asesoramiento Independiente.")
             )
             continue
 
         # Elegir la de menor Ongoing Charge
         best = chosen.sort_values("Ongoing Charge", na_position="last").iloc[0]
-        
-        min_initial = str(best.get("Min. Initial","")).strip()
-            if len(min_initial) > 11:
-                incidencias.append(
-                    (best.get("Name") or best.get("Share Class Name") or best.get("Fund Name") or best.get("Family Name"),
-                     f"El mínimo inicial de contratación del fondo '{best.get('Name')}' es de '{min_initial}', consultar.")
-                )
+
+        # 🔎 Validación adicional: Min. Initial superior a 10 millones (heurística por longitud de texto)
+        min_initial = str(best.get("Min. Initial", "")).strip()
+        if len(min_initial) > 11:
+            nombre_best = (
+                best.get("Name")
+                or best.get("Share Class Name")
+                or best.get("Fund Name")
+                or best.get("Family Name")
+                or "(sin nombre)"
+            )
+            incidencias.append(
+                (nombre_best, f"El mínimo inicial de contratación del fondo '{nombre_best}' es de '{min_initial}', consultar.")
+            )
+
         out_rows.append({
-            "ISIN": best.get("ISIN",""),
+            "ISIN": best.get("ISIN", ""),
             "Name": best.get("Name") or best.get("Share Class Name") or best.get("Fund Name") or best.get("Family Name"),
-            "Type of Share": best.get("Type of Share",""),
-            "Currency": best.get("Currency",""),
-            "Hedged": best.get("Hedged",""),
+            "Type of Share": best.get("Type of Share", ""),
+            "Currency": best.get("Currency", ""),
+            "Hedged": best.get("Hedged", ""),
             "Ongoing Charge": best.get("Ongoing Charge", np.nan),
-            "Min. Initial": best.get("Min. Initial",""),
-            "MiFID FH": best.get("MiFID FH",""),
-            "MiFID EMT": best.get("MiFID EMT") or best.get("MIFID EMT",""),
-            "Prospectus AF": best.get("Prospectus AF",""),
-            "Soft Close": best.get("Soft Close",""),
-            "Subscription Fee": best.get("Subscription Fee",""),
-            "Redemption Fee": best.get("Redemption Fee",""),
+            "Min. Initial": best.get("Min. Initial", ""),
+            "MiFID FH": best.get("MiFID FH", ""),
+            "MiFID EMT": best.get("MiFID EMT") or best.get("MIFID EMT", ""),
+            "Prospectus AF": best.get("Prospectus AF", ""),
+            "Soft Close": best.get("Soft Close", ""),
+            "Subscription Fee": best.get("Subscription Fee", ""),
+            "Redemption Fee": best.get("Redemption Fee", ""),
             "VALOR ACTUAL (EUR)": valor
         })
 
@@ -338,8 +351,7 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I_filtrada: pd.DataFrame)
     if df_out.empty:
         return df_out, incidencias
 
-    # Recalcular pesos por valor SOLO con los transformados
-   # Recalcular pesos por valor SOLO con los que tienen OC; el resto queda con peso 0
+    # Recalcular pesos por valor SOLO con los que tienen OC; el resto queda con peso 0
     df_out = recalcular_pesos_por_valor_respetando_oc(df_out, valor_col="VALOR ACTUAL (EUR)")
     return df_out, incidencias
 
