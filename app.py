@@ -148,7 +148,7 @@ def recalcular_pesos_por_valor_respetando_oc(df, valor_col="VALOR ACTUAL (EUR)",
 # =========================
 st.subheader("Paso 1: Subir ficheros")
 master_file  = st.file_uploader("📥 Excel AllFunds (Share Class Tool, completo)", type=["xlsx"], key="master")
-cartera_file = st.file_uploader("📥 Excel de Cartera (columnas 'ISIN' y 'VALOR ACTUAL (EUR)')", type=["xlsx"], key="weights")
+cartera_file = st.file_uploader("📥 Excel de Landing de Carteras, cartera cliente. Debe incluir columnas ISIN y Valos Actual (EUR)", type=["xlsx"], key="weights")
 if not master_file or not cartera_file:
     st.info("Sube ambos ficheros para continuar.")
     st.stop()
@@ -180,7 +180,7 @@ targets_valor = {"valor actual (eur)","valor actual(eur)","valor actual eur","va
 r_isin,  c_isin  = _find_header_cell(df_any, targets_isin)
 r_valor, c_valor = _find_header_cell(df_any, targets_valor)
 if r_isin is None or r_valor is None:
-    st.error("No se han encontrado los encabezados 'ISIN' y/o 'VALOR ACTUAL (EUR)'.")
+    st.error("EL excel adjunto de cartera no se ha podido leer")
     st.stop()
 
 col_isin   = df_any.iloc[r_isin+1:,  c_isin].reset_index(drop=True)
@@ -242,17 +242,11 @@ st.metric("📊 TER Cartera I (real por valor)", _fmt_ratio_eu_percent(ter_I, 2)
 # 4) Conversión a Cartera II (AI)
 # =========================
 st.subheader("Paso 3: Convertir a Cartera de Asesoramiento Independiente (Cartera II)")
-st.caption("Se busca en el MISMO Family Name que la clase original, en este orden: 1) AI + Transferable='Yes'; 2) T + Transferable='Yes' con MiFID FH 'clean'; 3) clase cuyo *Name* contenga la palabra 'Cartera'. Se asigna el mismo VALOR ACTUAL (EUR) del fondo original y se recalculan pesos por valor con los transformados.")
+st.caption("Se busca clase apta para Asesoramiento Indendiente, manteniendo mismas características de divisa, cobertura, reparto")
 
 def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I_filtrada: pd.DataFrame):
     """
-    Convierte Cartera I a clases AI/T Clean dentro del MISMO Family Name.
-    Orden de búsqueda:
-      1) AI + Transferable == 'Yes' con mismo Type of Share / Currency / Hedged
-      2) T  + Transferable == 'Yes' con MiFID FH 'clean' y mismo Type / Currency / Hedged
-      3) Cualquier clase del mismo Family Name cuyo Name contenga 'Cartera'
-    Para la clase elegida, copia VALOR ACTUAL (EUR) del fondo original y luego
-    recalcula los pesos por valor usando solo los transformados.
+    Convierte Cartera I a clases aptas para Asesoramiento Independiente, manteniendo mismas características.
     """
     clean_set = {"clean", "clean institucional", "clean institutional"}
     out_rows = []
@@ -310,13 +304,19 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I_filtrada: pd.DataFrame)
         if chosen is None or chosen.empty:
             incidencias.append(
                 (row.get("Name","(sin nombre)"),
-                 "No se encontró clase AI/T (clean) transferible ni clase con 'Cartera' en el Name dentro del mismo Family Name.")
+                 "No se encontró clase apta para Asesoramiento Independiente con mismas características")
             )
             continue
 
         # Elegir la de menor Ongoing Charge
         best = chosen.sort_values("Ongoing Charge", na_position="last").iloc[0]
-
+        
+        min_initial = str(best.get("Min. Initial","")).strip()
+            if len(min_initial) > 11:
+                incidencias.append(
+                    (best.get("Name") or best.get("Share Class Name") or best.get("Fund Name") or best.get("Family Name"),
+                     f"El mínimo inicial de contratación del fondo '{best.get('Name')}' es de '{min_initial}', consultar.")
+                )
         out_rows.append({
             "ISIN": best.get("ISIN",""),
             "Name": best.get("Name") or best.get("Share Class Name") or best.get("Fund Name") or best.get("Family Name"),
