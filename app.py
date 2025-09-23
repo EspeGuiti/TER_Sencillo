@@ -327,7 +327,7 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I_filtrada: pd.DataFrame)
                 or "(sin nombre)"
             )
             incidencias.append(
-                (nombre_best, f"El mínimo inicial de contratación del fondo '{nombre_best}' es de '{min_initial}', consultar.")
+                (nombre_best, f"El mínimo inicial de contratación del fondo es de '{min_initial}', consultar.")
             )
 
         out_rows.append({
