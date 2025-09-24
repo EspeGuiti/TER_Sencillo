@@ -400,44 +400,96 @@ if st.session_state.cartera_II and st.session_state.cartera_II["table"] is not N
         st.info("No se pudieron transformar fondos a AI con los criterios dados.")
 
 # =========================
-# 5) Comparación: SOLO fondos transformados
+# 5) Comparación: SOLO fondos transformados (selector editable)
 # =========================
 st.subheader("Paso 4: Comparar Cartera I vs Cartera II (solo fondos transformados)")
-if st.session_state.cartera_II and st.session_state.cartera_II["table"] is not None and not st.session_state.cartera_II["table"].empty:
-    dfII = st.session_state.cartera_II["table"].copy()
-    # Tomamos los Family Name de los fondos transformados
-    fams_II = set(
-        pd.merge(dfII[["ISIN"]], df_master[["ISIN","Family Name"]].assign(ISIN=lambda s: s["ISIN"].astype(str).str.upper()),
-                 how="left", on="ISIN")["Family Name"].dropna().astype(str)
+
+if (
+    st.session_state.cartera_II
+    and st.session_state.cartera_II["table"] is not None
+    and not st.session_state.cartera_II["table"].empty
+):
+    dfII_all = st.session_state.cartera_II["table"].copy()
+
+    # Mapear ISIN -> Family Name (clave estable para emparejar)
+    fam_map = df_master[["ISIN", "Family Name"]].copy()
+    fam_map["ISIN"] = fam_map["ISIN"].astype(str).str.upper()
+
+    dfII_all["ISIN"] = dfII_all["ISIN"].astype(str).str.upper()
+    dfII_all = pd.merge(dfII_all, fam_map, on="ISIN", how="left")
+
+    # ---------- UI de selección editable ----------
+    # Un candidato por familia (Name representativo)
+    opts = (
+        dfII_all.sort_values(["Family Name", "Name"])
+                .drop_duplicates(subset=["Family Name"], keep="first")
+                [["Family Name", "Name", "VALOR ACTUAL (EUR)", "Ongoing Charge"]]
+                .reset_index(drop=True)
     )
 
-    # Filtramos Cartera I RAW (ya match ISIN en maestro) a esos Family Name
-    fams_master = df_master[["ISIN","Family Name"]].copy()
-    fams_master["ISIN"] = fams_master["ISIN"].astype(str).str.upper()
+    key_df = "selector_fondos_df"
+    if key_df not in st.session_state:
+        tmp = opts.copy()
+        tmp.insert(0, "Incluir", True)  # por defecto todos incluidos
+        st.session_state[key_df] = tmp
+    else:
+        # Re-sincroniza por Family Name por si cambian candidatos
+        saved = st.session_state[key_df]
+        tmp = opts.merge(saved[["Family Name", "Incluir"]], on="Family Name", how="left")
+        tmp["Incluir"] = tmp["Incluir"].fillna(True)
+        st.session_state[key_df] = tmp
+
+    st.markdown("Marca/desmarca los fondos a **incluir** en la comparativa y pulsa **Aplicar selección**.")
+    edited = st.data_editor(
+        st.session_state[key_df],
+        use_container_width=True,
+        hide_index=True,
+        key="selector_editor",
+        column_config={
+            "Incluir": st.column_config.CheckboxColumn(required=False),
+            "VALOR ACTUAL (EUR)": st.column_config.TextColumn(),
+            "Ongoing Charge": st.column_config.TextColumn(),
+        }
+    )
+    aplicar = st.button("✅ Aplicar selección")
+    if aplicar:
+        st.session_state[key_df] = edited  # guarda lo que marcaste
+
+    selected_families = set(st.session_state[key_df].loc[st.session_state[key_df]["Incluir"], "Family Name"])
+    if len(selected_families) == 0:
+        st.info("No hay fondos seleccionados para comparar.")
+        st.stop()
+
+    # ---------- Subset II por familias seleccionadas ----------
+    dfII_sel = dfII_all[dfII_all["Family Name"].astype(str).isin(selected_families)].copy()
+    dfII_sel = recalcular_pesos_por_valor_respetando_oc(dfII_sel, valor_col="VALOR ACTUAL (EUR)")
+    ter_II_sel = calcular_ter_por_valor(dfII_sel)
+
+    # ---------- Subset I por las mismas familias ----------
     dfI_raw = st.session_state.cartera_I_raw.copy()
     dfI_raw["ISIN"] = dfI_raw["ISIN"].astype(str).str.upper()
-    dfI_raw = pd.merge(dfI_raw, fams_master, on="ISIN", how="left", suffixes=("","_fam"))
-    dfI_sub = dfI_raw[dfI_raw["Family Name_fam"].astype(str).isin(fams_II)].copy()
+    dfI_raw = pd.merge(dfI_raw, fam_map, on="ISIN", how="left")
 
-    # Recalcular pesos y TER en el subset de I y usar II tal cual
+    dfI_sub = dfI_raw[dfI_raw["Family Name"].astype(str).isin(selected_families)].copy()
     dfI_sub = recalcular_pesos_por_valor_respetando_oc(dfI_sub, valor_col="VALOR ACTUAL (EUR)")
     ter_I_sub = calcular_ter_por_valor(dfI_sub)
-    ter_II_sub = st.session_state.cartera_II["ter"]  # ya viene ponderado por valor en el subset transformado
 
+    # ---------- Presentación ----------
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("#### Cartera I (solo fondos con transformación AI)")
+        st.markdown("#### Cartera I (fondos incluidos)")
         mostrar_tabla_con_formato(dfI_sub, "Tabla Cartera I (subset comparable)")
         st.metric("TER medio ponderado", _fmt_ratio_eu_percent(ter_I_sub, 2) if ter_I_sub is not None else "-")
+
     with c2:
         st.markdown("#### Cartera II (AI)")
-        mostrar_tabla_con_formato(dfII, "Tabla Cartera II (AI)")
-        st.metric("TER medio ponderado", _fmt_ratio_eu_percent(ter_II_sub, 2) if ter_II_sub is not None else "-")
+        mostrar_tabla_con_formato(dfII_sel, "Tabla Cartera II (AI, subset)")
+        st.metric("TER medio ponderado", _fmt_ratio_eu_percent(ter_II_sel, 2) if ter_II_sel is not None else "-")
 
-    if ter_I_sub is not None and ter_II_sub is not None:
+    if ter_I_sub is not None and ter_II_sel is not None:
         st.markdown("---")
-        st.subheader("Diferencia de TER (II − I) en fondos transformados")
-        st.metric("Diferencia", _fmt_ratio_eu_percent(ter_II_sub - ter_I_sub, 2))
+        st.subheader("Diferencia de TER (II − I) en fondos incluidos")
+        st.metric("Diferencia", _fmt_ratio_eu_percent(ter_II_sel - ter_I_sub, 2))
 else:
     st.info("Primero convierte a Cartera II para ver la comparativa.")
 
