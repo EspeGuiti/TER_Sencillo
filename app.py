@@ -226,13 +226,42 @@ st.markdown(f"**Fondos válidos en AllFunds (Cartera I):** {len(df_I)}")
 def mostrar_tabla_con_formato(df_in, title):
     st.markdown(f"#### {title}")
     df_show = pretty_table(df_in).copy()
-    # formato
+
+    # Ongoing Charge -> mostrar como % (viene como ratio: 0.0123 -> 1,23%)
     if "Ongoing Charge" in df_show.columns:
-        df_show["Ongoing Charge"] = df_show["Ongoing Charge"].apply(lambda v: _format_eu_number(v,4))
+        def _fmt_oc(v):
+            if pd.isna(v): 
+                return ""
+            try:
+                x = float(str(v).replace(",", "."))  # por si llega como texto
+            except Exception:
+                return ""
+            return _fmt_ratio_eu_percent(x, 2)
+        df_show["Ongoing Charge"] = df_in.get("Ongoing Charge").apply(_fmt_oc).astype(str)
+
+    # Weight % -> mostrar como % con símbolo (origen ya es %: 12.34 -> 12,34%)
     if "Weight %" in df_show.columns:
-        df_show["Weight %"] = df_show["Weight %"].apply(lambda v: _format_eu_number(v,2))
+        def _fmt_w(v):
+            if pd.isna(v):
+                return ""
+            try:
+                x = float(str(v).replace(",", ".")) / 100.0  # pasar a ratio
+            except Exception:
+                return ""
+            return _fmt_ratio_eu_percent(x, 2)
+        df_show["Weight %"] = df_in.get("Weight %").apply(_fmt_w).astype(str)
+
+    # Valor actual en formato europeo con coma (sin %)
     if "VALOR ACTUAL (EUR)" in df_show.columns:
-        df_show["VALOR ACTUAL (EUR)"] = df_show["VALOR ACTUAL (EUR)"].apply(lambda v: _format_eu_number(v,2))
+        def _fmt_val(v):
+            if pd.isna(v): 
+                return ""
+            try:
+                return _format_eu_number(float(v), 2)
+            except Exception:
+                return str(v)
+        df_show["VALOR ACTUAL (EUR)"] = df_in.get("VALOR ACTUAL (EUR)").apply(_fmt_val).astype(str)
+
     st.dataframe(df_show, use_container_width=True)
 
 mostrar_tabla_con_formato(df_I, "Tabla Cartera I (solo ISIN encontrados en AllFunds, pesos por valor)")
