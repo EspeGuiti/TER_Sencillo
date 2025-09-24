@@ -415,22 +415,27 @@ if (
     fam_map = df_master[["ISIN", "Family Name"]].copy()
     fam_map["ISIN"] = fam_map["ISIN"].astype(str).str.upper()
 
+    # ---- Preparar Cartera II con Family Name normalizado ----
     dfII_all["ISIN"] = dfII_all["ISIN"].astype(str).str.upper()
-    dfII_all = pd.merge(dfII_all, fam_map, on="ISIN", how="left")
+    dfII_all = pd.merge(dfII_all, fam_map, on="ISIN", how="left", suffixes=("", "_fam"))
+    if "Family Name" not in dfII_all.columns:
+        for c in ("Family Name_fam", "Family Name_x", "Family Name_y"):
+            if c in dfII_all.columns:
+                dfII_all.rename(columns={c: "Family Name"}, inplace=True)
+                break
 
-    # --- Botón/toggle para editar selección al final ---
+    # ---- Botón / modo edición ----
     if "edit_mode" not in st.session_state:
         st.session_state.edit_mode = False
-
     if st.button("🛠️ Editar cartera (incluir/excluir fondos)"):
         st.session_state.edit_mode = not st.session_state.edit_mode
 
     # Candidatos: 1 por Family Name (Name representativo)
     opts = (
         dfII_all.sort_values(["Family Name", "Name"])
-               .drop_duplicates(subset=["Family Name"], keep="first")
-               [["Family Name", "Name", "VALOR ACTUAL (EUR)", "Ongoing Charge"]]
-               .reset_index(drop=True)
+                .drop_duplicates(subset=["Family Name"], keep="first")
+                [["Family Name", "Name", "VALOR ACTUAL (EUR)", "Ongoing Charge"]]
+                .reset_index(drop=True)
     )
 
     # Estado persistente de selección
@@ -440,13 +445,12 @@ if (
         tmp.insert(0, "Incluir", True)  # todos incluidos por defecto
         st.session_state[key_df] = tmp
     else:
-        # Re-sincroniza por Family Name por si cambian candidatos
         saved = st.session_state[key_df][["Family Name", "Incluir"]]
         tmp = opts.merge(saved, on="Family Name", how="left")
         tmp["Incluir"] = tmp["Incluir"].fillna(True)
         st.session_state[key_df] = tmp
 
-    # Si está activo el modo edición, mostramos data_editor
+    # Editor solo en modo edición (evita errores de tipo y bloquea columnas no editables)
     if st.session_state.edit_mode:
         st.markdown("Marca/desmarca los fondos a **incluir** y pulsa **Aplicar selección**.")
         edited = st.data_editor(
@@ -454,19 +458,16 @@ if (
             use_container_width=True,
             hide_index=True,
             key="selector_editor",
-            # Solo es editable 'Incluir'; el resto bloqueado
             disabled=["Family Name", "Name", "VALOR ACTUAL (EUR)", "Ongoing Charge"],
             column_config={
                 "Incluir": st.column_config.CheckboxColumn(),
-                # Estas columnas son float en el DataFrame, así evitamos el error de tipos:
                 "VALOR ACTUAL (EUR)": st.column_config.NumberColumn(format="%.2f"),
                 "Ongoing Charge": st.column_config.NumberColumn(format="%.4f"),
             },
         )
         if st.button("✅ Aplicar selección"):
-            st.session_state[key_df] = edited  # guardamos lo marcado
+            st.session_state[key_df] = edited
 
-    # Familias finalmente seleccionadas
     selected_families = set(
         st.session_state[key_df].loc[st.session_state[key_df]["Incluir"], "Family Name"]
     )
@@ -476,14 +477,18 @@ if (
 
     # ---------- Subset II por familias seleccionadas ----------
     dfII_sel = dfII_all[dfII_all["Family Name"].astype(str).isin(selected_families)].copy()
-    # Recalcula pesos por valor usando SOLO los que tienen OC; resto peso 0
     dfII_sel = recalcular_pesos_por_valor_respetando_oc(dfII_sel, valor_col="VALOR ACTUAL (EUR)")
     ter_II_sel = calcular_ter_por_valor(dfII_sel)
 
     # ---------- Subset I por las mismas familias ----------
     dfI_raw = st.session_state.cartera_I_raw.copy()
     dfI_raw["ISIN"] = dfI_raw["ISIN"].astype(str).str.upper()
-    dfI_raw = pd.merge(dfI_raw, fam_map, on="ISIN", how="left")
+    dfI_raw = pd.merge(dfI_raw, fam_map, on="ISIN", how="left", suffixes=("", "_fam"))
+    if "Family Name" not in dfI_raw.columns:
+        for c in ("Family Name_fam", "Family Name_x", "Family Name_y"):
+            if c in dfI_raw.columns:
+                dfI_raw.rename(columns={c: "Family Name"}, inplace=True)
+                break
 
     dfI_sub = dfI_raw[dfI_raw["Family Name"].astype(str).isin(selected_families)].copy()
     dfI_sub = recalcular_pesos_por_valor_respetando_oc(dfI_sub, valor_col="VALOR ACTUAL (EUR)")
