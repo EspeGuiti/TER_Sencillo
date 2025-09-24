@@ -100,10 +100,11 @@ def pretty_table(df_in: pd.DataFrame) -> pd.DataFrame:
     wanted = [
         "ISIN","Name","Type of Share","Currency","Hedged","Ongoing Charge",
         "Min. Initial","MIFID FH","MiFID EMT","Prospectus AF","Soft Close",
-        "Subscription Fee","Redemption Fee","VALOR ACTUAL (EUR)","Weight %"
+        "VALOR ACTUAL (EUR)","Weight %"
     ]
     for c in wanted:
-        if c not in tbl.columns: tbl[c] = np.nan
+        if c not in tbl.columns:
+            tbl[c] = np.nan
     return tbl[wanted]
 
 def calcular_ter_por_valor(df):
@@ -505,8 +506,6 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I_filtrada: pd.DataFrame)
             "MiFID EMT": best.get("MiFID EMT") or best.get("MIFID EMT", ""),
             "Prospectus AF": best.get("Prospectus AF", ""),
             "Soft Close": best.get("Soft Close", ""),
-            "Subscription Fee": best.get("Subscription Fee", ""),
-            "Redemption Fee": best.get("Redemption Fee", ""),
             "VALOR ACTUAL (EUR)": valor
         })
 
