@@ -151,104 +151,97 @@ def abrir_outlook_con_comparativa(destinatarios: str,
                                   ter_II_sel: float | None,
                                   adjuntar_excel: bool = True):
     """
-    Abre Outlook con un nuevo correo (no lo envía) incluyendo:
-      - cuerpo con tablas de Cartera I y II en texto
-      - opcionalmente, adjunto Excel con ambas tablas formateadas
-    'destinatarios' admite múltiples correos separados por ';'
+    Abre Outlook con un nuevo correo (no lo envía).
+    - Cuerpo: solo resumen de TER I, TER II y Diferencia.
+    - Adjunto: Excel con HOJA 1 = Cartera I (subset) y HOJA 2 = Cartera II (subset),
+               mismas columnas y orden que en la app (pretty_table),
+               con % formateados (si hay xlsxwriter).
     """
     import os, tempfile
     try:
         import win32com.client as win32
-    except Exception as e:
+    except Exception:
         st.error("No se pudo cargar la librería de Outlook (pywin32). Instala `pip install pywin32`.")
         return
 
-    # Texto de tablas (cuerpo en texto plano)
-    tabla_I_txt = dfI_sub.to_string(index=False)
-    tabla_II_txt = dfII_sel.to_string(index=False)
-
     def _p(x):
-        # formatea ratios de TER a % con coma
         return _fmt_ratio_eu_percent(x, 2) if x is not None else "-"
 
-    cuerpo = f"""
-Hola,
+    cuerpo = f"""Hola,
 
-Adjunto la comparativa de las carteras definitivas:
+Adjunto la comparativa de las carteras definitivas.
 
 - TER Cartera I: {_p(ter_I_sub)}
 - TER Cartera II: {_p(ter_II_sel)}
 - Diferencia (II - I): {_p((ter_II_sel - ter_I_sub) if (ter_I_sub is not None and ter_II_sel is not None) else None)}
 
---- Cartera I (subset) ---
-{tabla_I_txt}
-
---- Cartera II (subset) ---
-{tabla_II_txt}
-
 Saludos,
 """
 
-    # Crea el correo
     outlook = win32.Dispatch('outlook.application')
-    mail = outlook.CreateItem(0)  # olMailItem
+    mail = outlook.CreateItem(0)
     mail.To = destinatarios
     mail.Subject = asunto
     mail.Body = cuerpo
 
-    # Adjuntar Excel opcional con % ya formateados (recomendado)
-    adj_path = None
     if adjuntar_excel:
         from io import BytesIO
-        import pandas as pd
-        import numpy as np
 
-        # Prepara un Excel con dos hojas
+        # 1) Partimos de las tablas con mismas columnas/orden que la app
+        dfI_x = pretty_table(dfI_sub).copy()
+        dfII_x = pretty_table(dfII_sel).copy()
+
+        # 2) Normalizamos tipos numéricos para Excel
+        def _num(s): return pd.to_numeric(s, errors="coerce")
+        for dfx in (dfI_x, dfII_x):
+            if "Ongoing Charge" in dfx.columns:
+                dfx["Ongoing Charge"] = _num(dfx["Ongoing Charge"])
+            if "Weight %" in dfx.columns:
+                dfx["Weight %"] = _num(dfx["Weight %"]) / 100.0  # Excel espera ratio
+            if "VALOR ACTUAL (EUR)" in dfx.columns:
+                dfx["VALOR ACTUAL (EUR)"] = _num(dfx["VALOR ACTUAL (EUR)"])
+
+        # 3) xlsxwriter si está disponible (formatos), si no openpyxl (sin estilos)
+        try:
+            import xlsxwriter  # noqa
+            _engine = "xlsxwriter"
+        except Exception:
+            _engine = "openpyxl"
+
         buf = BytesIO()
-        with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-            # Copias numéricas (no uses las tablas "bonitas" con strings)
-            dfI_x = dfI_sub.copy()
-            dfII_x = dfII_sel.copy()
-
-            # Asegura numéricos
-            for dfx in (dfI_x, dfII_x):
-                if "Ongoing Charge" in dfx.columns:
-                    dfx["Ongoing Charge"] = pd.to_numeric(dfx["Ongoing Charge"], errors="coerce")
-                if "Weight %" in dfx.columns:
-                    dfx["Weight %"] = pd.to_numeric(dfx["Weight %"], errors="coerce") / 100.0  # Excel espera ratio
-                if "VALOR ACTUAL (EUR)" in dfx.columns:
-                    dfx["VALOR ACTUAL (EUR)"] = pd.to_numeric(dfx["VALOR ACTUAL (EUR)"], errors="coerce")
-
+        with pd.ExcelWriter(buf, engine=_engine) as writer:
             dfI_x.to_excel(writer, index=False, sheet_name="Cartera I")
             dfII_x.to_excel(writer, index=False, sheet_name="Cartera II")
 
-            # Formatos
-            book = writer.book
-            fmt_pct2 = book.add_format({"num_format": "0.00%"})
-            fmt_pct4 = book.add_format({"num_format": "0.0000%"})
-            fmt_num  = book.add_format({"num_format": "#,##0.00"})
+            if _engine == "xlsxwriter":
+                book = writer.book
+                fmt_pct2 = book.add_format({"num_format": "0.00%"})
+                fmt_pct4 = book.add_format({"num_format": "0.0000%"})
+                fmt_num  = book.add_format({"num_format": "#,##0.00"})
 
-            def _fmt(ws, df):
-                cols = {c:i for i,c in enumerate(df.columns)}
-                if "Ongoing Charge" in cols:
-                    ws.set_column(cols["Ongoing Charge"], cols["Ongoing Charge"], None, fmt_pct4)
-                if "Weight %" in cols:
-                    ws.set_column(cols["Weight %"], cols["Weight %"], None, fmt_pct2)
-                if "VALOR ACTUAL (EUR)" in cols:
-                    ws.set_column(cols["VALOR ACTUAL (EUR)"], cols["VALOR ACTUAL (EUR)"], None, fmt_num)
+                def _apply(ws, df):
+                    cols = {c:i for i,c in enumerate(df.columns)}
+                    # ancho aproximado + congelar encabezado
+                    for c, idx in cols.items():
+                        width = max(len(c), int(df[c].astype(str).map(len).fillna(0).max() if c in df else 10))
+                        ws.set_column(idx, idx, min(width + 2, 60))
+                    ws.freeze_panes(1, 0)
+                    # formatos
+                    if "Ongoing Charge" in cols:       ws.set_column(cols["Ongoing Charge"], cols["Ongoing Charge"], None, fmt_pct4)
+                    if "Weight %" in cols:             ws.set_column(cols["Weight %"],      cols["Weight %"],      None, fmt_pct2)
+                    if "VALOR ACTUAL (EUR)" in cols:   ws.set_column(cols["VALOR ACTUAL (EUR)"], cols["VALOR ACTUAL (EUR)"], None, fmt_num)
 
-            _fmt(writer.sheets["Cartera I"], dfI_x)
-            _fmt(writer.sheets["Cartera II"], dfII_x)
+                _apply(writer.sheets["Cartera I"], dfI_x)
+                _apply(writer.sheets["Cartera II"], dfII_x)
 
-        # Guardar a fichero temporal y adjuntar
-        tmpdir = tempfile.gettempdir()
-        adj_path = os.path.join(tmpdir, "Comparativa_Carteras.xlsx")
-        with open(adj_path, "wb") as f:
+        # Guardar temporal y adjuntar
+        import tempfile
+        tmp_path = os.path.join(tempfile.gettempdir(), "Comparativa_Carteras.xlsx")
+        with open(tmp_path, "wb") as f:
             f.write(buf.getvalue())
-        mail.Attachments.Add(adj_path)
+        mail.Attachments.Add(tmp_path)
 
-    mail.Display()  # abre la ventana de Outlook con todo preparado (el usuario revisa y envía)
-
+    mail.Display()
 
 # =========================
 # 1) Subida de archivos
@@ -655,16 +648,15 @@ if (
 else:
     st.info("Primero convierte a Cartera II para ver la comparativa.")
 
-# Botón para abrir Outlook con correo preparado
 if st.button("📧 Abrir Outlook con comparativa"):
     abrir_outlook_con_comparativa(
-        destinatarios="maria.guitian@gruposantander.es;asesor@gruposantander.es",  # cambia a quien quieras
+        destinatarios="nombre1@gruposantander.es;nombre2@gruposantander.es",
         asunto="Comparativa TER – Cartera I vs Cartera II (definitiva)",
-        dfI_sub=dfI_sub,           # subset de I que estás mostrando en la comparativa
-        dfII_sel=dfII_sel,         # subset de II que estás mostrando en la comparativa
+        dfI_sub=dfI_sub,       # subset I que estás mostrando en la comparativa
+        dfII_sel=dfII_sel,     # subset II que estás mostrando en la comparativa
         ter_I_sub=ter_I_sub,
         ter_II_sel=ter_II_sel,
-        adjuntar_excel=True        # pon False si no quieres adjunto
+        adjuntar_excel=True
     )
 
 # =========================
@@ -688,5 +680,6 @@ if incidencias_total:
         key = (str(name).strip().lower(), str(msg).strip())
         if key in vistos:
             continue
+            
         vistos.add(key)
         st.error(f"{name}: {msg}")
