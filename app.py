@@ -400,7 +400,7 @@ if st.session_state.cartera_II and st.session_state.cartera_II["table"] is not N
         st.info("No se pudieron transformar fondos a AI con los criterios dados.")
 
 # =========================
-# 5) Comparación: SOLO fondos transformados (selector editable)
+# 5) Comparación: SOLO fondos transformados (selector editable al final)
 # =========================
 st.subheader("Paso 4: Comparar Cartera I vs Cartera II (solo fondos transformados)")
 
@@ -418,50 +418,65 @@ if (
     dfII_all["ISIN"] = dfII_all["ISIN"].astype(str).str.upper()
     dfII_all = pd.merge(dfII_all, fam_map, on="ISIN", how="left")
 
-    # ---------- UI de selección editable ----------
-    # Un candidato por familia (Name representativo)
+    # --- Botón/toggle para editar selección al final ---
+    if "edit_mode" not in st.session_state:
+        st.session_state.edit_mode = False
+
+    if st.button("🛠️ Editar cartera (incluir/excluir fondos)"):
+        st.session_state.edit_mode = not st.session_state.edit_mode
+
+    # Candidatos: 1 por Family Name (Name representativo)
     opts = (
         dfII_all.sort_values(["Family Name", "Name"])
-                .drop_duplicates(subset=["Family Name"], keep="first")
-                [["Family Name", "Name", "VALOR ACTUAL (EUR)", "Ongoing Charge"]]
-                .reset_index(drop=True)
+               .drop_duplicates(subset=["Family Name"], keep="first")
+               [["Family Name", "Name", "VALOR ACTUAL (EUR)", "Ongoing Charge"]]
+               .reset_index(drop=True)
     )
 
+    # Estado persistente de selección
     key_df = "selector_fondos_df"
     if key_df not in st.session_state:
         tmp = opts.copy()
-        tmp.insert(0, "Incluir", True)  # por defecto todos incluidos
+        tmp.insert(0, "Incluir", True)  # todos incluidos por defecto
         st.session_state[key_df] = tmp
     else:
         # Re-sincroniza por Family Name por si cambian candidatos
-        saved = st.session_state[key_df]
-        tmp = opts.merge(saved[["Family Name", "Incluir"]], on="Family Name", how="left")
+        saved = st.session_state[key_df][["Family Name", "Incluir"]]
+        tmp = opts.merge(saved, on="Family Name", how="left")
         tmp["Incluir"] = tmp["Incluir"].fillna(True)
         st.session_state[key_df] = tmp
 
-    st.markdown("Marca/desmarca los fondos a **incluir** en la comparativa y pulsa **Aplicar selección**.")
-    edited = st.data_editor(
-        st.session_state[key_df],
-        use_container_width=True,
-        hide_index=True,
-        key="selector_editor",
-        column_config={
-            "Incluir": st.column_config.CheckboxColumn(required=False),
-            "VALOR ACTUAL (EUR)": st.column_config.TextColumn(),
-            "Ongoing Charge": st.column_config.TextColumn(),
-        }
-    )
-    aplicar = st.button("✅ Aplicar selección")
-    if aplicar:
-        st.session_state[key_df] = edited  # guarda lo que marcaste
+    # Si está activo el modo edición, mostramos data_editor
+    if st.session_state.edit_mode:
+        st.markdown("Marca/desmarca los fondos a **incluir** y pulsa **Aplicar selección**.")
+        edited = st.data_editor(
+            st.session_state[key_df],
+            use_container_width=True,
+            hide_index=True,
+            key="selector_editor",
+            # Solo es editable 'Incluir'; el resto bloqueado
+            disabled=["Family Name", "Name", "VALOR ACTUAL (EUR)", "Ongoing Charge"],
+            column_config={
+                "Incluir": st.column_config.CheckboxColumn(),
+                # Estas columnas son float en el DataFrame, así evitamos el error de tipos:
+                "VALOR ACTUAL (EUR)": st.column_config.NumberColumn(format="%.2f"),
+                "Ongoing Charge": st.column_config.NumberColumn(format="%.4f"),
+            },
+        )
+        if st.button("✅ Aplicar selección"):
+            st.session_state[key_df] = edited  # guardamos lo marcado
 
-    selected_families = set(st.session_state[key_df].loc[st.session_state[key_df]["Incluir"], "Family Name"])
+    # Familias finalmente seleccionadas
+    selected_families = set(
+        st.session_state[key_df].loc[st.session_state[key_df]["Incluir"], "Family Name"]
+    )
     if len(selected_families) == 0:
         st.info("No hay fondos seleccionados para comparar.")
         st.stop()
 
     # ---------- Subset II por familias seleccionadas ----------
     dfII_sel = dfII_all[dfII_all["Family Name"].astype(str).isin(selected_families)].copy()
+    # Recalcula pesos por valor usando SOLO los que tienen OC; resto peso 0
     dfII_sel = recalcular_pesos_por_valor_respetando_oc(dfII_sel, valor_col="VALOR ACTUAL (EUR)")
     ter_II_sel = calcular_ter_por_valor(dfII_sel)
 
