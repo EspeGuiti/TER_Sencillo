@@ -256,7 +256,8 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I_filtrada: pd.DataFrame)
     clean_set = {"clean", "clean institucional", "clean institutional"}
     out_rows = []
     incidencias = []
-
+    reported_no_ai_names = set()  # para no repetir la misma incidencia por Name
+    
     def _name_has_cartera(row):
         for col in ("Name", "Share Class Name", "Fund Name"):
             v = row.get(col, None)
@@ -326,11 +327,16 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I_filtrada: pd.DataFrame)
                 chosen = cartera_pool
 
         # Si no hay clase apta
+        # Si no hay clase apta
         if chosen is None or chosen.empty:
-            incidencias.append(
-                (row.get("Name", "(sin nombre)"),
-                 "Para este fondo no se ha encontrado una clase que cumpla los criterios de Asesoramiento Independiente.")
-            )
+            name_row = row.get("Name", "(sin nombre)")
+            # solo reportar una vez por Name (p.ej. ETFs con múltiples líneas)
+            key = str(name_row).strip().lower()
+            if key not in reported_no_ai_names:
+                incidencias.append(
+                    (name_row, "Para este fondo no se ha encontrado una clase que cumpla los criterios de Asesoramiento Independiente.")
+                )
+                reported_no_ai_names.add(key)
             continue
 
         # Elegir la de menor Ongoing Charge
@@ -514,11 +520,25 @@ else:
     st.info("Primero convierte a Cartera II para ver la comparativa.")
 
 # =========================
-# 6) Incidencias
+# 6) Incidencias (deduplicadas por Name+mensaje)
 # =========================
-if st.session_state.get("incidencias"):
+# Recoge incidencias que tengas en variables locales y en session_state
+incidencias_total = []
+if "incidencias" in st.session_state and st.session_state.incidencias:
+    incidencias_total.extend(st.session_state.incidencias)
+# Si en tu flujo mantienes una lista local llamada `incidencias`, añádela:
+try:
+    if incidencias:
+        incidencias_total.extend(incidencias)
+except NameError:
+    pass
+
+if incidencias_total:
     st.subheader("⚠️ Incidencias detectadas")
-    for fam, msg in st.session_state.incidencias:
-        st.error(f"{fam}: {msg}")
-
-
+    vistos = set()  # (name_normalizado, mensaje)
+    for name, msg in incidencias_total:
+        key = (str(name).strip().lower(), str(msg).strip())
+        if key in vistos:
+            continue
+        vistos.add(key)
+        st.error(f"{name}: {msg}")
