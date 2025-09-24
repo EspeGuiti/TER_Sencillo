@@ -548,6 +548,42 @@ if (
 else:
     st.info("Primero convierte a Cartera II para ver la comparativa.")
 
+# ---------------------------
+# Generar correo automático (mailto con tablas en texto)
+# ---------------------------
+import urllib.parse
+
+destinatario = "destinatario@gruposantander.es"  # cambia por el correo que quieras
+asunto = "Comparativa Cartera I vs Cartera II"
+
+# Convertir tablas a texto plano
+tabla_I_txt = dfI_sub.to_string(index=False)
+tabla_II_txt = dfII_sel.to_string(index=False)
+
+# Cuerpo del correo en texto plano
+cuerpo = f"""
+Hola,
+
+Adjunto la comparativa de las carteras definitivas:
+
+📊 TER Cartera I: {_fmt_ratio_eu_percent(ter_I_sub,2) if ter_I_sub is not None else "-"}
+📊 TER Cartera II: {_fmt_ratio_eu_percent(ter_II_sel,2) if ter_II_sel is not None else "-"}
+📊 Diferencia (II - I): {_fmt_ratio_eu_percent(ter_II_sel - ter_I_sub,2) if ter_I_sub is not None and ter_II_sel is not None else "-"}
+
+--- Cartera I ---
+{tabla_I_txt}
+
+--- Cartera II ---
+{tabla_II_txt}
+
+Saludos,
+"""
+
+# Codificar para URL
+mailto_link = f"mailto:{destinatario}?subject={urllib.parse.quote(asunto)}&body={urllib.parse.quote(cuerpo)}"
+
+st.markdown(f"[📧 Generar correo en Outlook]({mailto_link})")
+
 # =========================
 # 6) Incidencias (deduplicadas por Name+mensaje)
 # =========================
