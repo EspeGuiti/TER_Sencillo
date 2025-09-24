@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import re
 import unicodedata
+from typing import Optional
 
 # =========================
 # Configuración de página
@@ -143,7 +144,7 @@ def recalcular_pesos_por_valor_respetando_oc(df, valor_col="VALOR ACTUAL (EUR)",
         df2.loc[elig, "Weight %"] = (df2.loc[elig, valor_col] / total_ok) * 100.0
     return df2
 
-def abrir_outlook_con_comparativa(destinatarios: str,
+def abrir_outlook_con_comparativa(destinatarios: Optional[str],
                                   asunto: str,
                                   dfI_sub: pd.DataFrame,
                                   dfII_sel: pd.DataFrame,
@@ -169,10 +170,10 @@ def abrir_outlook_con_comparativa(destinatarios: str,
 
     cuerpo = f"""Hola,
 
-Adjunto la comparativa de las carteras definitivas.
+Adjunto la comparativa de la cartera actual.
 
-- TER Cartera I: {_p(ter_I_sub)}
-- TER Cartera II: {_p(ter_II_sel)}
+- TER Cartera I (actual): {_p(ter_I_sub)}
+- TER Cartera II (transformada): {_p(ter_II_sel)}
 - Diferencia (II - I): {_p((ter_II_sel - ter_I_sub) if (ter_I_sub is not None and ter_II_sel is not None) else None)}
 
 Saludos,
@@ -180,18 +181,19 @@ Saludos,
 
     outlook = win32.Dispatch('outlook.application')
     mail = outlook.CreateItem(0)
-    mail.To = destinatarios
+    # ↓↓↓ deja el campo "Para" vacío si no se pasa nada
+    if destinatarios and destinatarios.strip():
+        mail.To = destinatarios.strip()
     mail.Subject = asunto
     mail.Body = cuerpo
 
     if adjuntar_excel:
         from io import BytesIO
-
-        # 1) Partimos de las tablas con mismas columnas/orden que la app
+        # 1) Tablas tal como se muestran en la app (mismo orden/columnas)
         dfI_x = pretty_table(dfI_sub).copy()
         dfII_x = pretty_table(dfII_sel).copy()
 
-        # 2) Normalizamos tipos numéricos para Excel
+        # 2) Normalizar tipos numéricos para Excel
         def _num(s): return pd.to_numeric(s, errors="coerce")
         for dfx in (dfI_x, dfII_x):
             if "Ongoing Charge" in dfx.columns:
@@ -201,7 +203,7 @@ Saludos,
             if "VALOR ACTUAL (EUR)" in dfx.columns:
                 dfx["VALOR ACTUAL (EUR)"] = _num(dfx["VALOR ACTUAL (EUR)"])
 
-        # 3) xlsxwriter si está disponible (formatos), si no openpyxl (sin estilos)
+        # 3) Motor Excel (xlsxwriter si hay, si no openpyxl)
         try:
             import xlsxwriter  # noqa
             _engine = "xlsxwriter"
@@ -221,21 +223,17 @@ Saludos,
 
                 def _apply(ws, df):
                     cols = {c:i for i,c in enumerate(df.columns)}
-                    # ancho aproximado + congelar encabezado
                     for c, idx in cols.items():
                         width = max(len(c), int(df[c].astype(str).map(len).fillna(0).max() if c in df else 10))
                         ws.set_column(idx, idx, min(width + 2, 60))
                     ws.freeze_panes(1, 0)
-                    # formatos
-                    if "Ongoing Charge" in cols:       ws.set_column(cols["Ongoing Charge"], cols["Ongoing Charge"], None, fmt_pct4)
-                    if "Weight %" in cols:             ws.set_column(cols["Weight %"],      cols["Weight %"],      None, fmt_pct2)
-                    if "VALOR ACTUAL (EUR)" in cols:   ws.set_column(cols["VALOR ACTUAL (EUR)"], cols["VALOR ACTUAL (EUR)"], None, fmt_num)
+                    if "Ongoing Charge" in cols:     ws.set_column(cols["Ongoing Charge"], cols["Ongoing Charge"], None, fmt_pct4)
+                    if "Weight %" in cols:           ws.set_column(cols["Weight %"],      cols["Weight %"],      None, fmt_pct2)
+                    if "VALOR ACTUAL (EUR)" in cols: ws.set_column(cols["VALOR ACTUAL (EUR)"], cols["VALOR ACTUAL (EUR)"], None, fmt_num)
 
                 _apply(writer.sheets["Cartera I"], dfI_x)
                 _apply(writer.sheets["Cartera II"], dfII_x)
 
-        # Guardar temporal y adjuntar
-        import tempfile
         tmp_path = os.path.join(tempfile.gettempdir(), "Comparativa_Carteras.xlsx")
         with open(tmp_path, "wb") as f:
             f.write(buf.getvalue())
@@ -650,10 +648,10 @@ else:
 
 if st.button("📧 Abrir Outlook con comparativa"):
     abrir_outlook_con_comparativa(
-        destinatarios="nombre1@gruposantander.es;nombre2@gruposantander.es",
+        destinatarios="",  # o None → queda en blanco
         asunto="Comparativa TER – Cartera I vs Cartera II (definitiva)",
-        dfI_sub=dfI_sub,       # subset I que estás mostrando en la comparativa
-        dfII_sel=dfII_sel,     # subset II que estás mostrando en la comparativa
+        dfI_sub=dfI_sub,
+        dfII_sel=dfII_sel,
         ter_I_sub=ter_I_sub,
         ter_II_sel=ter_II_sel,
         adjuntar_excel=True
