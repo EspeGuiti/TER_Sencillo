@@ -532,67 +532,94 @@ if st.session_state.cartera_II and st.session_state.cartera_II["table"] is not N
         st.info("No se pudieron transformar fondos a AI con los criterios dados.")
 
 # =========================
-# 5) Comparación: SOLO fondos transformados (selector editable al final)
+# 5) Comparación: lista editable basada en TODA Cartera I
 # =========================
-st.subheader("Paso 4: Comparar Cartera I vs Cartera II (solo fondos transformados)")
+st.subheader("Paso 4: Comparar Cartera I vs Cartera II (edita qué entra y si usar original)")
 
 if (
-    st.session_state.cartera_II
+    st.session_state.cartera_I
+    and st.session_state.cartera_I["table"] is not None
+    and not st.session_state.cartera_I["table"].empty
+    and st.session_state.cartera_II
     and st.session_state.cartera_II["table"] is not None
-    and not st.session_state.cartera_II["table"].empty
 ):
-    dfII_all = st.session_state.cartera_II["table"].copy()
+    # --- Tablas base ---
+    dfI_all = st.session_state.cartera_I["table"].copy()          # todos los válidos en AllFunds (por ISIN) con valor
+    dfII_all = st.session_state.cartera_II["table"].copy()         # solo transformados AI (puede estar vacía)
 
     # Mapear ISIN -> Family Name (clave estable para emparejar)
     fam_map = df_master[["ISIN", "Family Name"]].copy()
     fam_map["ISIN"] = fam_map["ISIN"].astype(str).str.upper()
 
-    # ---- Preparar Cartera II con Family Name normalizado ----
-    dfII_all["ISIN"] = dfII_all["ISIN"].astype(str).str.upper()
-    dfII_all = pd.merge(dfII_all, fam_map, on="ISIN", how="left", suffixes=("", "_fam"))
-    if "Family Name" not in dfII_all.columns:
+    # Normaliza I con Family Name
+    dfI_all["ISIN"] = dfI_all["ISIN"].astype(str).str.upper()
+    dfI_all = pd.merge(dfI_all, fam_map, on="ISIN", how="left", suffixes=("", "_fam"))
+    if "Family Name" not in dfI_all.columns:
         for c in ("Family Name_fam", "Family Name_x", "Family Name_y"):
-            if c in dfII_all.columns:
-                dfII_all.rename(columns={c: "Family Name"}, inplace=True)
+            if c in dfI_all.columns:
+                dfI_all.rename(columns={c: "Family Name"}, inplace=True)
                 break
 
-    # ---- Botón / modo edición ----
-    if "edit_mode" not in st.session_state:
-        st.session_state.edit_mode = False
-    if st.button("🛠️ Editar cartera (incluir/excluir fondos)"):
-        st.session_state.edit_mode = not st.session_state.edit_mode
+    # Normaliza II con Family Name
+    if not dfII_all.empty:
+        dfII_all["ISIN"] = dfII_all["ISIN"].astype(str).str.upper()
+        dfII_all = pd.merge(dfII_all, fam_map, on="ISIN", how="left", suffixes=("", "_fam"))
+        if "Family Name" not in dfII_all.columns:
+            for c in ("Family Name_fam", "Family Name_x", "Family Name_y"):
+                if c in dfII_all.columns:
+                    dfII_all.rename(columns={c: "Family Name"}, inplace=True)
+                    break
 
-    # Candidatos: 1 por Family Name (Name representativo)
-    opts = (
-        dfII_all.sort_values(["Family Name", "Name"])
-                .drop_duplicates(subset=["Family Name"], keep="first")
-                [["Family Name", "Name", "VALOR ACTUAL (EUR)", "Ongoing Charge"]]
-                .reset_index(drop=True)
+    # --- Candidatos: UNO por Family Name (origen = I; representativo por Name de I) ---
+    rep_I = (
+        dfI_all.sort_values(["Family Name","Name"])
+               .drop_duplicates(subset=["Family Name"], keep="first")
+               [["Family Name","Name","VALOR ACTUAL (EUR)","Ongoing Charge"]]
+               .reset_index(drop=True)
     )
 
-    # Estado persistente de selección
-    key_df = "selector_fondos_df"
-    if key_df not in st.session_state:
-        tmp = opts.copy()
-        tmp.insert(0, "Incluir", True)  # todos incluidos por defecto
-        st.session_state[key_df] = tmp
-    else:
-        saved = st.session_state[key_df][["Family Name", "Incluir"]]
-        tmp = opts.merge(saved, on="Family Name", how="left")
-        tmp["Incluir"] = tmp["Incluir"].fillna(True)
-        st.session_state[key_df] = tmp
+    families_in_II = set(dfII_all["Family Name"]) if not dfII_all.empty else set()
 
-    # Editor solo en modo edición (evita errores de tipo y bloquea columnas no editables)
+    # DataFrame del selector (persistente)
+    key_df = "selector_fondos_allI_df"
+    if key_df not in st.session_state:
+        sel = rep_I.copy()
+        sel.insert(0, "Incluir", True)  # entra por defecto
+        # si no existe AI, por defecto usar original; si existe AI, por defecto usar transformada
+        sel.insert(1, "Usar versión original (I)", sel["Family Name"].apply(lambda f: f not in families_in_II))
+        # informativo: ¿está en II?
+        sel.insert(2, "Disponible en Cartera II (AI)", sel["Family Name"].apply(lambda f: f in families_in_II))
+        st.session_state[key_df] = sel
+    else:
+        # Resincro por Family Name manteniendo elecciones previas
+        prev = st.session_state[key_df][["Family Name","Incluir","Usar versión original (I)"]]
+        sel = rep_I.merge(prev, on="Family Name", how="left")
+        sel["Incluir"] = sel["Incluir"].fillna(True)
+        sel["Usar versión original (I)"] = sel["Usar versión original (I)"].fillna(
+            sel["Family Name"].apply(lambda f: f not in families_in_II)
+        )
+        sel.insert(2, "Disponible en Cartera II (AI)", sel["Family Name"].apply(lambda f: f in families_in_II))
+        st.session_state[key_df] = sel
+
+    # --- Botón / modo edición ---
+    if "edit_mode" not in st.session_state:
+        st.session_state.edit_mode = False
+    if st.button("🛠️ Editar cartera (incluir/excluir y elegir I/II)"):
+        st.session_state.edit_mode = not st.session_state.edit_mode
+
+    # Editor (solo checkboxes editables)
     if st.session_state.edit_mode:
-        st.markdown("Marca/desmarca los fondos a **incluir** y pulsa **Aplicar selección**.")
+        st.caption("Marca **Incluir** para que el fondo entre en la comparativa y marca **Usar versión original (I)** para que, aunque exista AI, se mantenga la clase original.")
         edited = st.data_editor(
             st.session_state[key_df],
             use_container_width=True,
             hide_index=True,
-            key="selector_editor",
-            disabled=["Family Name", "Name", "VALOR ACTUAL (EUR)", "Ongoing Charge"],
+            key="selector_editor_allI",
+            disabled=["Family Name","Name","VALOR ACTUAL (EUR)","Ongoing Charge","Disponible en Cartera II (AI)"],
             column_config={
                 "Incluir": st.column_config.CheckboxColumn(),
+                "Usar versión original (I)": st.column_config.CheckboxColumn(),
+                "Disponible en Cartera II (AI)": st.column_config.CheckboxColumn(disabled=True),
                 "VALOR ACTUAL (EUR)": st.column_config.NumberColumn(format="%.2f"),
                 "Ongoing Charge": st.column_config.NumberColumn(format="%.4f"),
             },
@@ -600,31 +627,46 @@ if (
         if st.button("✅ Aplicar selección"):
             st.session_state[key_df] = edited
 
-    selected_families = set(
-        st.session_state[key_df].loc[st.session_state[key_df]["Incluir"], "Family Name"]
-    )
-    if len(selected_families) == 0:
+    # Familias seleccionadas
+    selected = st.session_state[key_df].loc[st.session_state[key_df]["Incluir"], ["Family Name","Usar versión original (I)"]].copy()
+    if selected.empty:
         st.info("No hay fondos seleccionados para comparar.")
         st.stop()
 
-    # ---------- Subset II por familias seleccionadas ----------
-    dfII_sel = dfII_all[dfII_all["Family Name"].astype(str).isin(selected_families)].copy()
-    dfII_sel = recalcular_pesos_por_valor_respetando_oc(dfII_sel, valor_col="VALOR ACTUAL (EUR)")
-    ter_II_sel = calcular_ter_por_valor(dfII_sel)
+    # --- Construir subconjuntos para mostrar/comparar ---
+    # 1) Subconjunto I: todas las familias seleccionadas, filas de I (representativas)
+    dfI_sub = dfI_all[dfI_all["Family Name"].isin(set(selected["Family Name"]))].copy()
+    # usar 1 por Family Name (representativo de I)
+    dfI_sub = (dfI_sub.sort_values(["Family Name","Name"])
+                      .drop_duplicates(subset=["Family Name"], keep="first"))
 
-    # ---------- Subset I por las mismas familias ----------
-    dfI_raw = st.session_state.cartera_I_raw.copy()
-    dfI_raw["ISIN"] = dfI_raw["ISIN"].astype(str).str.upper()
-    dfI_raw = pd.merge(dfI_raw, fam_map, on="ISIN", how="left", suffixes=("", "_fam"))
-    if "Family Name" not in dfI_raw.columns:
-        for c in ("Family Name_fam", "Family Name_x", "Family Name_y"):
-            if c in dfI_raw.columns:
-                dfI_raw.rename(columns={c: "Family Name"}, inplace=True)
-                break
+    # 2) Subconjunto II FINAL: para cada familia seleccionada
+    ii_rows = []
+    # preindex por Family Name (escogemos 1 representativo por familia)
+    rep_II = None
+    if not dfII_all.empty:
+        rep_II = (dfII_all.sort_values(["Family Name","Name"])
+                           .drop_duplicates(subset=["Family Name"], keep="first"))
 
-    dfI_sub = dfI_raw[dfI_raw["Family Name"].astype(str).isin(selected_families)].copy()
+    for _, r in selected.iterrows():
+        fam = r["Family Name"]
+        use_I = bool(r["Usar versión original (I)"])
+        if not use_I and rep_II is not None and fam in set(rep_II["Family Name"]):
+            # usar fila transformada (II)
+            row = rep_II.loc[rep_II["Family Name"] == fam].iloc[0]
+        else:
+            # usar la versión original de I
+            row = dfI_sub.loc[dfI_sub["Family Name"] == fam].iloc[0]
+        ii_rows.append(row)
+
+    dfII_sel = pd.DataFrame(ii_rows, columns=dfI_sub.columns)  # alineamos columnas
+
+    # --- Recalcular pesos por valor (respeta OC: los sin OC quedan con Weight % = 0) ---
     dfI_sub = recalcular_pesos_por_valor_respetando_oc(dfI_sub, valor_col="VALOR ACTUAL (EUR)")
     ter_I_sub = calcular_ter_por_valor(dfI_sub)
+
+    dfII_sel = recalcular_pesos_por_valor_respetando_oc(dfII_sel, valor_col="VALOR ACTUAL (EUR)")
+    ter_II_sel = calcular_ter_por_valor(dfII_sel)
 
     # ---------- Presentación ----------
     c1, c2 = st.columns(2)
@@ -634,8 +676,8 @@ if (
         st.metric("TER medio ponderado", _fmt_ratio_eu_percent(ter_I_sub, 2) if ter_I_sub is not None else "-")
 
     with c2:
-        st.markdown("#### Cartera II (AI)")
-        mostrar_tabla_con_formato(dfII_sel, "Tabla Cartera II (AI, subset)")
+        st.markdown("#### Cartera II (final)")
+        mostrar_tabla_con_formato(dfII_sel, "Tabla Cartera II (final con I/II según selección)")
         st.metric("TER medio ponderado", _fmt_ratio_eu_percent(ter_II_sel, 2) if ter_II_sel is not None else "-")
 
     if ter_I_sub is not None and ter_II_sel is not None:
@@ -643,7 +685,7 @@ if (
         st.subheader("Diferencia de TER (II − I) en fondos incluidos")
         st.metric("Diferencia", _fmt_ratio_eu_percent(ter_II_sel - ter_I_sub, 2))
 else:
-    st.info("Primero convierte a Cartera II para ver la comparativa.")
+    st.info("Primero calcula Cartera I y convierte a Cartera II para ver la comparativa.")
 
 if st.button("📧 Abrir Outlook con comparativa"):
     abrir_outlook_con_comparativa(
