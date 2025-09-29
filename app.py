@@ -4,6 +4,7 @@ import numpy as np
 import re
 import unicodedata
 from typing import Optional
+from sam_clean_map import SAM_CLEAN_MAP
 
 # =========================
 # Configuración de página
@@ -241,6 +242,61 @@ Saludos,
         mail.Attachments.Add(tmp_path)
 
     mail.Display()
+def _sam_lookup(fam: str, currency: str | None = None, hedged: str | None = None):
+    """Busca entrada SAM por Family Name (y opcionalmente Currency/Hedged)."""
+    if not fam:
+        return None
+    fam_norm = str(fam).strip()
+    # 1) Coincidencia específica por Family+Currency+Hedged (si tu catálogo la trae)
+    if currency is not None and hedged is not None:
+        for rec in SAM_CLEAN_MAP:
+            if (rec.get("Family Name", "").strip() == fam_norm and
+                str(rec.get("Currency", "")).strip() == str(currency).strip() and
+                str(rec.get("Hedged", "")).strip() == str(hedged).strip()):
+                return rec
+    # 2) Fallback por Family Name
+    for rec in SAM_CLEAN_MAP:
+        if rec.get("Family Name", "").strip() == fam_norm:
+            return rec
+    return None
+
+def _build_row_from_sam(df_master: pd.DataFrame, sam_rec: dict, fallback_row: pd.Series | dict):
+    """
+    Crea la fila ‘clean SAM’ y rellena con maestro si está; si no, usa datos del fondo original (I).
+    """
+    isin_clean = sam_rec.get("ISIN", "")
+    oc_clean   = sam_rec.get("Ongoing Charge", None)
+    name_clean = sam_rec.get("Name", "")
+
+    row_master = None
+    if isin_clean:
+        m = df_master[df_master["ISIN"].astype(str).str.upper() == str(isin_clean).upper()]
+        if not m.empty:
+            row_master = m.iloc[0]
+
+    def _gv(src, key, default=""):
+        try:
+            return src.get(key, default)
+        except Exception:
+            return src[key] if key in src else default
+
+    Type_of_Share = _gv(row_master, "Type of Share", _gv(fallback_row, "Type of Share", ""))
+    Currency      = _gv(row_master, "Currency",      _gv(fallback_row, "Currency", ""))
+    Hedged        = _gv(row_master, "Hedged",        _gv(fallback_row, "Hedged", ""))
+
+    return {
+        "ISIN": isin_clean,
+        "Name": name_clean,
+        "Type of Share": Type_of_Share,
+        "Currency": Currency,
+        "Hedged": Hedged,
+        "Ongoing Charge": oc_clean,
+        "Min. Initial": _gv(row_master, "Min. Initial", _gv(fallback_row, "Min. Initial", "")),
+        "MiFID FH": _gv(row_master, "MiFID FH", ""),
+        "MiFID EMT": _gv(row_master, "MiFID EMT", _gv(row_master, "MIFID EMT", "")),
+        "Prospectus AF": _gv(row_master, "Prospectus AF", ""),
+        "Soft Close": _gv(row_master, "Soft Close", ""),
+    }
 
 # =========================
 # 1) Subida de archivos
@@ -426,6 +482,43 @@ def convertir_a_AI(df_master: pd.DataFrame, df_cartera_I_filtrada: pd.DataFrame)
         ]
 
         chosen = None
+        # --- PASO 0: si el Family Name es SAM, forzar la clase clean oficial del catálogo ---
+        sam_rec = _sam_lookup(fam, currency=cur, hedged=hed)
+        if sam_rec is not None:
+            best_dict = _build_row_from_sam(df_master, sam_rec, row)
+    
+            name_val = best_dict.get("Name") or best_dict.get("Family Name") or "(sin nombre)"
+            emt_val  = best_dict.get("MiFID EMT") or best_dict.get("MIFID EMT")
+    
+            # Aviso EMT: si empieza por 'N' -> profesional
+            try:
+                s_emt = ("" if pd.isna(emt_val) else str(emt_val)).replace(" ", "").upper()
+                if len(s_emt) >= 1 and s_emt[0] == "N":
+                    incidencias.append((name_val, "Clase solo disponible para cliente profesional"))
+            except Exception:
+                pass
+    
+            # Min. Initial > 10M (heurística por longitud > 11)
+            min_initial = str(best_dict.get("Min. Initial", "")).strip()
+            if len(min_initial) > 11:
+                incidencias.append((name_val, f"El mínimo inicial de contratación del fondo '{name_val}' es de '{min_initial}', consultar."))
+    
+            out_rows.append({
+                "ISIN": best_dict.get("ISIN",""),
+                "Name": name_val,
+                "Type of Share": best_dict.get("Type of Share",""),
+                "Currency": best_dict.get("Currency",""),
+                "Hedged": best_dict.get("Hedged",""),
+                "Ongoing Charge": best_dict.get("Ongoing Charge", np.nan),
+                "Min. Initial": best_dict.get("Min. Initial",""),
+                "MiFID FH": best_dict.get("MiFID FH",""),
+                "MiFID EMT": emt_val,
+                "Prospectus AF": best_dict.get("Prospectus AF",""),
+                "Soft Close": best_dict.get("Soft Close",""),
+                "VALOR ACTUAL (EUR)": valor
+            })
+            continue  # ¡Muy importante! ya no se ejecuta la búsqueda AI/T/Cartera para SAM
+    
 
         # 1) AI + Transferable Yes
         ai = subset[subset["Prospectus AF"].apply(lambda x: _has_code(x, "AI"))]
