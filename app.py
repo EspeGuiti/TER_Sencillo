@@ -279,17 +279,17 @@ def _build_row_from_sam(df_master: pd.DataFrame, sam_rec: dict, fallback_row: pd
             row_master = m.iloc[0]          # ⬅️ y si hay match, fila del maestro
 
     def _gv(src, key, default=""):
-    # Si no hay fuente -> devuelve el valor por defecto
-    if src is None:
-        return default
-    # Series de pandas o dict: usa .get de forma segura
-    if isinstance(src, (pd.Series, dict)):
-        return src.get(key, default)
-    # Último recurso: intenta indexar; si falla, devuelve default
-    try:
-        return src[key]
-    except Exception:
-        return default
+        # Si no hay fuente -> devuelve el valor por defecto
+        if src is None:
+            return default
+        # Series de pandas o dict: usa .get de forma segura
+        if isinstance(src, (pd.Series, dict)):
+            return src.get(key, default)
+        # Último recurso: intenta indexar; si falla, devuelve default
+        try:
+            return src[key]
+        except Exception:
+            return default
 
     Type_of_Share = _gv(row_master, "Type of Share", _gv(fallback_row, "Type of Share", ""))
     Currency      = _gv(row_master, "Currency",      _gv(fallback_row, "Currency", ""))
