@@ -748,8 +748,6 @@ if (
     # Si quieres mantener la edición por Family Name, puedes preparar la tabla editable así:
     # (pero el match inicial SIEMPRE debe ser por ISIN de Cartera II, nunca por Family Name)
 
-    dfII_sel = pd.DataFrame(ii_rows, columns=dfI_sub.columns)  # alineamos columnas
-
     # --- Recalcular pesos por valor (respeta OC: los sin OC quedan con Weight % = 0) ---
     dfI_sub = recalcular_pesos_por_valor_respetando_oc(dfI_sub, valor_col="VALOR ACTUAL (EUR)")
     ter_I_sub = calcular_ter_por_valor(dfI_sub)
