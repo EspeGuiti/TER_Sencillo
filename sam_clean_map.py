@@ -4,7 +4,7 @@ SAM_CLEAN_MAP = [
     {'Family Name': 'SANTANDER RENDIMIENTO', 'ISIN': 'ES0138534054', 'Name': 'Santander Rendimiento, F.I. - Clase Cartera', 'Ongoing Charge': 0.0009000000000000001, 'Currency': 'EUR'},
     {'Family Name': 'SANTANDER RENTA FIJA FLOTANTE, FI', 'ISIN': 'ES0107943013', 'Name': 'Santander Renta Fija Flotante, F.I. - Clase Cartera', 'Ongoing Charge': 0.0013, 'Currency': 'EUR'},
     {'Family Name': 'Santander PB Target 2025 FI', 'ISIN': 'ES0176106013', 'Name': 'Santander PB Target 2025, F.I.- Clase Cartera', 'Ongoing Charge': 0.002, 'Currency': 'EUR'},
-    {'Family Name': 'Santander Corto Plazo FI', 'ISIN': 'ES0174735037', 'Name': 'Santander Corto Plazo, F.I. - Clase Cartera', 'Ongoing Charge': 0.0013, 'Currency': 'EUR'},
+    {'Family Name': 'SPB RF CORTO PLAZO, FI', 'ISIN': 'ES0174735037', 'Name': 'Santander Corto Plazo, F.I. - Clase Cartera', 'Ongoing Charge': 0.0013, 'Currency': 'EUR'},
     {'Family Name': 'Santander PB Target 2025 2 FI', 'ISIN': 'ES0145825016', 'Name': 'Santander PB Target 2025 2, FI- Clase Cartera', 'Ongoing Charge': 0.0024, 'Currency': 'EUR'},
     {'Family Name': 'SANTANDER EUROCREDITO', 'ISIN': 'ES0176938019', 'Name': 'Santander Eurocrédito, F.I. - Clase Cartera', 'Ongoing Charge': 0.0018, 'Currency': 'EUR'},
     {'Family Name': 'SANTANDER RESPONSABILIDAD SOLIDARIO, FI', 'ISIN': 'ES0145821015', 'Name': 'Santander Compromiso Solidario, FI - Clase Cartera', 'Ongoing Charge': 0.004, 'Currency': 'EUR'},
