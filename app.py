@@ -748,17 +748,6 @@ if (
     # Si quieres mantener la edición por Family Name, puedes preparar la tabla editable así:
     # (pero el match inicial SIEMPRE debe ser por ISIN de Cartera II, nunca por Family Name)
 
-    for _, r in selected.iterrows():
-        fam = r["Family Name"]
-        use_I = bool(r["Usar versión original (I)"])
-        if not use_I and rep_II is not None and fam in set(rep_II["Family Name"]):
-            # usar fila transformada (II)
-            row = rep_II.loc[rep_II["Family Name"] == fam].iloc[0]
-        else:
-            # usar la versión original de I
-            row = dfI_sub.loc[dfI_sub["Family Name"] == fam].iloc[0]
-        ii_rows.append(row)
-
     dfII_sel = pd.DataFrame(ii_rows, columns=dfI_sub.columns)  # alineamos columnas
 
     # --- Recalcular pesos por valor (respeta OC: los sin OC quedan con Weight % = 0) ---
