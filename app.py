@@ -738,19 +738,15 @@ if (
         st.stop()
 
     # --- Construir subconjuntos para mostrar/comparar ---
-    # 1) Subconjunto I: todas las familias seleccionadas, filas de I (representativas)
-    dfI_sub = dfI_all[dfI_all["Family Name"].isin(set(selected["Family Name"]))].copy()
-    # usar 1 por Family Name (representativo de I)
-    dfI_sub = (dfI_sub.sort_values(["Family Name","Name"])
-                      .drop_duplicates(subset=["Family Name"], keep="first"))
-
-    # 2) Subconjunto II FINAL: para cada familia seleccionada
-    ii_rows = []
-    # preindex por Family Name (escogemos 1 representativo por familia)
-    rep_II = None
-    if not dfII_all.empty:
-        rep_II = (dfII_all.sort_values(["Family Name","Name"])
-                           .drop_duplicates(subset=["Family Name"], keep="first"))
+    # 1) Subconjunto I: todos los fondos seleccionados, filas de I por ISIN que aparecen en Cartera II
+    isin_ii_set = set(dfII_all["ISIN"])
+    dfI_sub = dfI_all[dfI_all["ISIN"].isin(isin_ii_set)].copy()
+    
+    # 2) Subconjunto II FINAL: usa DIRECTAMENTE la tabla de Cartera II (transformados AI)
+    dfII_sel = dfII_all[dfII_all["ISIN"].isin(isin_ii_set)].copy()
+    
+    # Si quieres mantener la edición por Family Name, puedes preparar la tabla editable así:
+    # (pero el match inicial SIEMPRE debe ser por ISIN de Cartera II, nunca por Family Name)
 
     for _, r in selected.iterrows():
         fam = r["Family Name"]
