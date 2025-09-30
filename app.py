@@ -706,91 +706,118 @@ if (
         st.session_state[key_df] = sel
 
     # --- Botón / modo edición ---
-    if "edit_mode" not in st.session_state:
-        st.session_state.edit_mode = False
-    if st.button("🛠️ Editar cartera (incluir/excluir y elegir I/II)"):
-        st.session_state.edit_mode = not st.session_state.edit_mode
+if "edit_mode" not in st.session_state:
+    st.session_state.edit_mode = False
+if st.button("🛠️ Editar cartera (incluir/excluir y elegir I/II)"):
+    st.session_state.edit_mode = not st.session_state.edit_mode
 
-    # Editor (solo checkboxes editables)
-    if st.session_state.edit_mode:
-        st.caption("Marca **Incluir** para que el fondo entre en la comparativa y marca **Usar versión original (I)** para que, aunque exista AI, se mantenga la clase original.")
-        edited = st.data_editor(
-            st.session_state[key_df],
-            use_container_width=True,
-            hide_index=True,
-            key="selector_editor_allI",
-            disabled=["Family Name","Name","VALOR ACTUAL (EUR)","Ongoing Charge","Disponible en Cartera II (AI)"],
-            column_config={
-                "Incluir": st.column_config.CheckboxColumn(),
-                "Usar versión original (I)": st.column_config.CheckboxColumn(),
-                "Disponible en Cartera II (AI)": st.column_config.CheckboxColumn(disabled=True),
-                "VALOR ACTUAL (EUR)": st.column_config.NumberColumn(format="%.2f"),
-                "Ongoing Charge": st.column_config.NumberColumn(format="%.4f"),
-            },
-        )
-        if st.button("✅ Aplicar selección"):
-            st.session_state[key_df] = edited
+# Subconjunto de columnas para el editor (sin Valor / OC)
+editor_cols = ["Family Name", "Name", "Disponible en Cartera II (AI)", "Incluir", "Usar versión original (I)"]
 
-    # Familias seleccionadas
-    selected = st.session_state[key_df].loc[st.session_state[key_df]["Incluir"], ["Family Name","Usar versión original (I)"]].copy()
+# Inicialización (primer render): Incluir = Disponible / Usar original = False
+if key_df not in st.session_state:
+    base = rep_I.copy()
+    disp = base["Family Name"].isin(families_in_II)
+    sel = pd.DataFrame({
+        "Family Name": base["Family Name"],
+        "Name": base["Name"],
+        "Disponible en Cartera II (AI)": disp,
+        "Incluir": disp,                       # ← igual que Disponible
+        "Usar versión original (I)": False     # ← vacío por defecto
+    })
+    st.session_state[key_df] = sel
+else:
+    # Re-sincronizar por Family Name manteniendo las elecciones previas cuando cambie rep_I
+    prev = st.session_state[key_df][["Family Name","Incluir","Usar versión original (I)"]]
+    base = rep_I.merge(prev, on="Family Name", how="left")
+    base["Disponible en Cartera II (AI)"] = base["Family Name"].isin(families_in_II)
+    # faltantes → defaults
+    base["Incluir"] = base["Incluir"].fillna(base["Disponible en Cartera II (AI)"])
+    base["Usar versión original (I)"] = base["Usar versión original (I)"].fillna(False)
+    st.session_state[key_df] = base[["Family Name","Name","Disponible en Cartera II (AI)","Incluir","Usar versión original (I)"]]
+
+# Editor
+if st.session_state.edit_mode:
+    st.caption("Marca **Incluir** para que el fondo entre en la comparativa. "
+               "Si incluyes uno **no disponible** en Cartera II (AI), se marcará automáticamente **Usar versión original (I)**.")
+    edited = st.data_editor(
+        st.session_state[key_df][editor_cols],
+        use_container_width=True,
+        hide_index=True,
+        key="selector_editor_allI",
+        disabled=["Family Name","Name","Disponible en Cartera II (AI)"],  # solo se pueden tocar los dos checks
+        column_config={
+            "Disponible en Cartera II (AI)": st.column_config.CheckboxColumn(disabled=True),
+            "Incluir": st.column_config.CheckboxColumn(),
+            "Usar versión original (I)": st.column_config.CheckboxColumn(),
+        },
+    )
+
+    # Regla automática: si Incluir==True y Disponible==False -> Usar versión original = True
+    mask_force_orig = edited["Incluir"] & ~edited["Disponible en Cartera II (AI)"]
+    edited.loc[mask_force_orig, "Usar versión original (I)"] = True
+
+    if st.button("✅ Aplicar selección"):
+        st.session_state[key_df] = edited[editor_cols].copy()
+
+    # Familias seleccionadas y regla de uso de original
+    sel_tbl = st.session_state[key_df]
+    selected = sel_tbl[sel_tbl["Incluir"]].copy()
     if selected.empty:
         st.info("No hay fondos seleccionados para comparar.")
         st.stop()
-
-    # --- Construir subconjuntos para mostrar/comparar ---
-    # 1) Cartera II (derecha): exactamente lo mismo que se generó en el Paso 3
-    dfII_sel = dfII_all.copy()
     
-    # 2) Cartera I (izquierda): construir fila a fila siguiendo el orden de Cartera II
-    #    con una REGLA ESPECIAL para ES0174735037 → fondo cuyo Name contenga
-    #    "SPB RF CORTO PLAZO" o "Santander Corto Plazo"
+    families_selected = set(selected["Family Name"])
+    families_use_orig = set(selected.loc[selected["Usar versión original (I)"] |
+                                         ~selected["Disponible en Cartera II (AI)"], "Family Name"])
+    
+    # --- 1) Cartera II (derecha) ---
+    # a) Las familias incluidas y disponibles en II -> usar la clase AI
+    dfII_ai = dfII_all[dfII_all["Family Name"].isin(families_selected - families_use_orig)].copy()
+    
+    # b) Las familias incluidas NO disponibles (o marcadas 'usar original') -> usar la clase ORIGINAL (de I)
+    dfI_orig = dfI_all[dfI_all["Family Name"].isin(families_use_orig)].copy()
+    if not dfI_orig.empty:
+        # Si hay varias clases por familia en I, toma la de mayor VALOR ACTUAL (EUR) como representante
+        if "VALOR ACTUAL (EUR)" in dfI_orig.columns:
+            dfI_orig = dfI_orig.sort_values("VALOR ACTUAL (EUR)", ascending=False)
+        dfI_orig = dfI_orig.drop_duplicates(subset=["Family Name"], keep="first")
+    
+    # Reencuadra columnas de I a las de II para poder concatenar
+    common_cols = list(dfII_all.columns)
+    dfI_as_II = dfI_orig.reindex(columns=common_cols, fill_value=np.nan)
+    dfII_sel = pd.concat([dfII_ai, dfI_as_II], ignore_index=True)
+    
+    # --- 2) Cartera I (izquierda) — alineada fila a fila con dfII_sel ---
     pattern_corto = r"(SPB\s*RF\s*CORTO\s*PLAZO|Santander\s+Corto\s+Plazo)"
     rows_I = []
-    cols_I = dfI_all.columns  # preserva columnas de Cartera I
-    
+    cols_I = dfI_all.columns
     for _, rowII in dfII_sel.reset_index(drop=True).iterrows():
         picked = None
-    
-        # Regla especial: si el ISIN de II es ES0174735037, buscar por Name en I
-        if str(rowII.get("ISIN", "")).strip().upper() == "ES0174735037":
+        # Regla ES0174735037
+        if str(rowII.get("ISIN","")).strip().upper() == "ES0174735037":
             if "Name" in dfI_all.columns:
-                cand = dfI_all[dfI_all["Name"]
-                               .astype(str)
-                               .str.contains(pattern_corto, case=False, regex=True, na=False)]
+                cand = dfI_all[dfI_all["Name"].astype(str).str.contains(pattern_corto, case=False, regex=True, na=False)]
                 if not cand.empty:
-                    # criterio de desempate: mayor VALOR ACTUAL (EUR) si existe, si no la primera
                     if "VALOR ACTUAL (EUR)" in cand.columns:
                         cand = cand.sort_values("VALOR ACTUAL (EUR)", ascending=False)
                     picked = cand.iloc[0]
-    
-        # Regla general: si no aplicó la especial, intenta por Family Name
+        # Regla general: por Family Name
         if picked is None:
             fam = rowII.get("Family Name")
-            if pd.notna(fam) and "Family Name" in dfI_all.columns:
+            if pd.notna(fam):
                 cand = dfI_all[dfI_all["Family Name"] == fam]
                 if not cand.empty:
                     picked = cand.iloc[0]
-    
-        # Si encontramos algo, añadimos la fila; si no, añadimos una fila vacía (opcional)
-        if picked is not None:
-            # Asegura que las columnas coinciden
-            picked = picked.reindex(cols_I)
-            rows_I.append(picked)
-        else:
-            # fila vacía para mantener la alineación (puedes omitir esto si prefieres no mostrar nada)
-            rows_I.append(pd.Series(index=cols_I, dtype="object"))
-    
-    # Ensambla Cartera I ordenada exactamente como Cartera II
-    dfI_sub = pd.DataFrame(rows_I, columns=cols_I).copy()
-    # Elimina filas completamente vacías (si dejaste la opción anterior)
+        rows_I.append((picked.reindex(cols_I) if picked is not None else pd.Series(index=cols_I, dtype="object")))
+    dfI_sub = pd.DataFrame(rows_I, columns=cols_I)
     if "ISIN" in dfI_sub.columns:
         dfI_sub = dfI_sub[~(dfI_sub["ISIN"].isna() & dfI_sub.isna().all(axis=1))].copy()
-
-    # --- Recalcular pesos por valor (respeta OC: los sin OC quedan con Weight % = 0) ---
-    dfI_sub = recalcular_pesos_por_valor_respetando_oc(dfI_sub, valor_col="VALOR ACTUAL (EUR)")
+    
+    # --- Recalcular pesos/TER como ya hacías ---
+    dfI_sub  = recalcular_pesos_por_valor_respetando_oc(dfI_sub,  valor_col="VALOR ACTUAL (EUR)")
     ter_I_sub = calcular_ter_por_valor(dfI_sub)
-
-    dfII_sel = recalcular_pesos_por_valor_respetando_oc(dfII_sel, valor_col="VALOR ACTUAL (EUR)")
+    dfII_sel  = recalcular_pesos_por_valor_respetando_oc(dfII_sel, valor_col="VALOR ACTUAL (EUR)")
     ter_II_sel = calcular_ter_por_valor(dfII_sel)
 
     # ---------- Presentación ----------
