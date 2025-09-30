@@ -738,15 +738,25 @@ if (
         st.stop()
 
     # --- Construir subconjuntos para mostrar/comparar ---
-    # 1) Subconjunto I: todos los fondos seleccionados, filas de I por ISIN que aparecen en Cartera II
-    isin_ii_set = set(dfII_all["ISIN"])
-    dfI_sub = dfI_all[dfI_all["ISIN"].isin(isin_ii_set)].copy()
+    # 1) Cartera II (derecha): exactamente lo mismo que se generó en el Paso 3
+    dfII_sel = dfII_all.copy()
     
-    # 2) Subconjunto II FINAL: usa DIRECTAMENTE la tabla de Cartera II (transformados AI)
-    dfII_sel = dfII_all[dfII_all["ISIN"].isin(isin_ii_set)].copy()
-    
-    # Si quieres mantener la edición por Family Name, puedes preparar la tabla editable así:
-    # (pero el match inicial SIEMPRE debe ser por ISIN de Cartera II, nunca por Family Name)
+    # 2) Cartera I (izquierda): los fondos equivalentes por *Family Name* en el mismo orden que Cartera II
+    order_fams = list(dfII_sel.get("Family Name", pd.Series(dtype=str)))
+    if order_fams:
+        # Filtra I por esas familias
+        dfI_sub = dfI_all[dfI_all["Family Name"].isin(order_fams)].copy()
+        # Ordena por el orden de las familias en Cartera II y quédate con una fila por familia
+        dfI_sub = dfI_sub.sort_values(
+            by="Family Name",
+            key=lambda s: pd.Categorical(s, categories=order_fams, ordered=True)
+        )
+        dfI_sub = dfI_sub.drop_duplicates(subset=["Family Name"], keep="first")
+        # Reordena exactamente como Cartera II
+        dfI_sub["__order__"] = pd.Categorical(dfI_sub["Family Name"], categories=order_fams, ordered=True)
+        dfI_sub = dfI_sub.sort_values("__order__").drop(columns="__order__")
+    else:
+        dfI_sub = dfI_all.head(0).copy()
 
     # --- Recalcular pesos por valor (respeta OC: los sin OC quedan con Weight % = 0) ---
     dfI_sub = recalcular_pesos_por_valor_respetando_oc(dfI_sub, valor_col="VALOR ACTUAL (EUR)")
