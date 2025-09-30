@@ -741,30 +741,50 @@ if (
     # 1) Cartera II (derecha): exactamente lo mismo que se generó en el Paso 3
     dfII_sel = dfII_all.copy()
     
-    # 2) Cartera I (izquierda): los fondos equivalentes por *Family Name* en el mismo orden que Cartera II
-    #    => versión robusta (sin Categorical) para evitar "Categorical categories cannot be null"
-    if "Family Name" in dfII_sel.columns:
-        # Lista en el MISMO orden que aparece en Cartera II, sin NaN y sin blancos
-        order_fams = [f for f in dfII_sel["Family Name"].dropna().tolist() if str(f).strip() != ""]
-        # Elimina duplicados preservando el orden
-        order_fams = list(dict.fromkeys(order_fams))
-    else:
-        order_fams = []
+    # 2) Cartera I (izquierda): construir fila a fila siguiendo el orden de Cartera II
+    #    con una REGLA ESPECIAL para ES0174735037 → fondo cuyo Name contenga
+    #    "SPB RF CORTO PLAZO" o "Santander Corto Plazo"
+    pattern_corto = r"(SPB\s*RF\s*CORTO\s*PLAZO|Santander\s+Corto\s+Plazo)"
+    rows_I = []
+    cols_I = dfI_all.columns  # preserva columnas de Cartera I
     
-    if order_fams:
-        # Filtra I por esas familias y quita NaN de seguridad
-        dfI_sub = dfI_all[dfI_all["Family Name"].isin(order_fams)].copy()
-        dfI_sub = dfI_sub.dropna(subset=["Family Name"])
+    for _, rowII in dfII_sel.reset_index(drop=True).iterrows():
+        picked = None
     
-        # Crea un ranking por familia y ordena con él (evita usar Categorical)
-        order_rank = {fam: i for i, fam in enumerate(order_fams)}
-        dfI_sub["__order__"] = dfI_sub["Family Name"].map(order_rank)
-        dfI_sub = dfI_sub.sort_values("__order__").drop(columns="__order__")
+        # Regla especial: si el ISIN de II es ES0174735037, buscar por Name en I
+        if str(rowII.get("ISIN", "")).strip().upper() == "ES0174735037":
+            if "Name" in dfI_all.columns:
+                cand = dfI_all[dfI_all["Name"]
+                               .astype(str)
+                               .str.contains(pattern_corto, case=False, regex=True, na=False)]
+                if not cand.empty:
+                    # criterio de desempate: mayor VALOR ACTUAL (EUR) si existe, si no la primera
+                    if "VALOR ACTUAL (EUR)" in cand.columns:
+                        cand = cand.sort_values("VALOR ACTUAL (EUR)", ascending=False)
+                    picked = cand.iloc[0]
     
-        # Si hay varias clases de la misma familia en I, nos quedamos con la primera (en el orden de II)
-        dfI_sub = dfI_sub.drop_duplicates(subset=["Family Name"], keep="first")
-    else:
-        dfI_sub = dfI_all.head(0).copy()
+        # Regla general: si no aplicó la especial, intenta por Family Name
+        if picked is None:
+            fam = rowII.get("Family Name")
+            if pd.notna(fam) and "Family Name" in dfI_all.columns:
+                cand = dfI_all[dfI_all["Family Name"] == fam]
+                if not cand.empty:
+                    picked = cand.iloc[0]
+    
+        # Si encontramos algo, añadimos la fila; si no, añadimos una fila vacía (opcional)
+        if picked is not None:
+            # Asegura que las columnas coinciden
+            picked = picked.reindex(cols_I)
+            rows_I.append(picked)
+        else:
+            # fila vacía para mantener la alineación (puedes omitir esto si prefieres no mostrar nada)
+            rows_I.append(pd.Series(index=cols_I, dtype="object"))
+    
+    # Ensambla Cartera I ordenada exactamente como Cartera II
+    dfI_sub = pd.DataFrame(rows_I, columns=cols_I).copy()
+    # Elimina filas completamente vacías (si dejaste la opción anterior)
+    if "ISIN" in dfI_sub.columns:
+        dfI_sub = dfI_sub[~(dfI_sub["ISIN"].isna() & dfI_sub.isna().all(axis=1))].copy()
 
     # --- Recalcular pesos por valor (respeta OC: los sin OC quedan con Weight % = 0) ---
     dfI_sub = recalcular_pesos_por_valor_respetando_oc(dfI_sub, valor_col="VALOR ACTUAL (EUR)")
