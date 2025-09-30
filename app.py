@@ -742,19 +742,27 @@ if (
     dfII_sel = dfII_all.copy()
     
     # 2) Cartera I (izquierda): los fondos equivalentes por *Family Name* en el mismo orden que Cartera II
-    order_fams = list(dfII_sel.get("Family Name", pd.Series(dtype=str)))
+    #    => versión robusta (sin Categorical) para evitar "Categorical categories cannot be null"
+    if "Family Name" in dfII_sel.columns:
+        # Lista en el MISMO orden que aparece en Cartera II, sin NaN y sin blancos
+        order_fams = [f for f in dfII_sel["Family Name"].dropna().tolist() if str(f).strip() != ""]
+        # Elimina duplicados preservando el orden
+        order_fams = list(dict.fromkeys(order_fams))
+    else:
+        order_fams = []
+    
     if order_fams:
-        # Filtra I por esas familias
+        # Filtra I por esas familias y quita NaN de seguridad
         dfI_sub = dfI_all[dfI_all["Family Name"].isin(order_fams)].copy()
-        # Ordena por el orden de las familias en Cartera II y quédate con una fila por familia
-        dfI_sub = dfI_sub.sort_values(
-            by="Family Name",
-            key=lambda s: pd.Categorical(s, categories=order_fams, ordered=True)
-        )
-        dfI_sub = dfI_sub.drop_duplicates(subset=["Family Name"], keep="first")
-        # Reordena exactamente como Cartera II
-        dfI_sub["__order__"] = pd.Categorical(dfI_sub["Family Name"], categories=order_fams, ordered=True)
+        dfI_sub = dfI_sub.dropna(subset=["Family Name"])
+    
+        # Crea un ranking por familia y ordena con él (evita usar Categorical)
+        order_rank = {fam: i for i, fam in enumerate(order_fams)}
+        dfI_sub["__order__"] = dfI_sub["Family Name"].map(order_rank)
         dfI_sub = dfI_sub.sort_values("__order__").drop(columns="__order__")
+    
+        # Si hay varias clases de la misma familia en I, nos quedamos con la primera (en el orden de II)
+        dfI_sub = dfI_sub.drop_duplicates(subset=["Family Name"], keep="first")
     else:
         dfI_sub = dfI_all.head(0).copy()
 
