@@ -639,15 +639,6 @@ if st.session_state.cartera_II and st.session_state.cartera_II["table"] is not N
 # 5) Comparación: lista editable basada en TODA Cartera I
 # =========================
 st.subheader("Paso 4: Comparar Cartera I vs Cartera II (edita qué entra y si usar original)")
-# --- Candidatos: UNO por Family Name (origen = I; representativo por Name de I) ---
-rep_I = (
-    dfI_all.sort_values(["Family Name","Name"])
-           .drop_duplicates(subset=["Family Name"], keep="first")
-           [["Family Name","Name"]]
-           .reset_index(drop=True)
-)
-
-families_in_II = set(dfII_all["Family Name"]) if not dfII_all.empty else set()
 
 if (
     st.session_state.cartera_I
@@ -715,16 +706,14 @@ if (
         st.session_state[key_df] = sel
 
     # --- Botón / modo edición ---
-    key_df = "selector_fondos_allI_df"
-    
     if "edit_mode" not in st.session_state:
         st.session_state.edit_mode = False
     if st.button("🛠️ Editar cartera (incluir/excluir y elegir I/II)"):
         st.session_state.edit_mode = not st.session_state.edit_mode
-    
+
     # Subconjunto de columnas para el editor (sin Valor / OC)
     editor_cols = ["Family Name", "Name", "Disponible en Cartera II (AI)", "Incluir", "Usar versión original (I)"]
-    
+
     # Inicialización (primer render): Incluir = Disponible / Usar original = False
     if key_df not in st.session_state:
         base = rep_I.copy()
@@ -745,7 +734,7 @@ if (
         base["Incluir"] = base["Incluir"].fillna(base["Disponible en Cartera II (AI)"])
         base["Usar versión original (I)"] = base["Usar versión original (I)"].fillna(False)
         st.session_state[key_df] = base[["Family Name","Name","Disponible en Cartera II (AI)","Incluir","Usar versión original (I)"]]
-    
+
     # Editor
     if st.session_state.edit_mode:
         st.caption("Marca **Incluir** para que el fondo entre en la comparativa. "
@@ -765,7 +754,7 @@ if (
         # Regla automática: Incluir==True y Disponible==False -> Usar versión original = True
         m = edited["Incluir"] & ~edited["Disponible en Cartera II (AI)"]
         edited.loc[m, "Usar versión original (I)"] = True
-    
+
         if st.button("✅ Aplicar selección"):
             st.session_state[key_df] = edited[editor_cols].copy()
 
