@@ -858,7 +858,7 @@ if (
     dfII_sel = recalcular_pesos_por_valor_respetando_oc(dfII_sel, valor_col="VALOR ACTUAL (EUR)")
     ter_II_sel = calcular_ter_por_valor(dfII_sel)
 
-    # ---------- Presentación ----------
+      # ---------- Presentación ----------
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("#### Cartera I (fondos incluidos)")
@@ -874,20 +874,22 @@ if (
         st.markdown("---")
         st.subheader("Diferencia de TER (II − I) en fondos incluidos")
         st.metric("Diferencia", _fmt_ratio_eu_percent(ter_II_sel - ter_I_sub, 2))
+
+    # 👉👉 INSERTA EL BOTÓN AQUÍ (dentro del mismo if del Paso 4)
+    if st.button("📧 Abrir Outlook con comparativa"):
+        abrir_outlook_con_comparativa(
+            destinatarios="",  # o None
+            asunto="Comparativa TER – Cartera I vs Cartera II (definitiva)",
+            dfI_sub=dfI_sub,
+            dfII_sel=dfII_sel,
+            ter_I_sub=ter_I_sub,
+            ter_II_sel=ter_II_sel,
+            adjuntar_excel=True
+        )
 else:
+    # ✅ Deja este mensaje tal cual. No pongas aquí el botón (no existen dfI_sub/dfII_sel)
     st.info("Primero calcula Cartera I y convierte a Cartera II para ver la comparativa.")
-
-if st.button("📧 Abrir Outlook con comparativa"):
-    abrir_outlook_con_comparativa(
-        destinatarios="",  # o None → queda en blanco
-        asunto="Comparativa TER – Cartera I vs Cartera II (definitiva)",
-        dfI_sub=dfI_sub,
-        dfII_sel=dfII_sel,
-        ter_I_sub=ter_I_sub,
-        ter_II_sel=ter_II_sel,
-        adjuntar_excel=True
-    )
-
+    
 # =========================
 # 6) Incidencias (deduplicadas por Name+mensaje)
 # =========================
