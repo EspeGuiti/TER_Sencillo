@@ -706,6 +706,8 @@ if (
         st.session_state[key_df] = sel
 
     # --- Botón / modo edición ---
+key_df = "selector_fondos_allI_df"
+
 if "edit_mode" not in st.session_state:
     st.session_state.edit_mode = False
 if st.button("🛠️ Editar cartera (incluir/excluir y elegir I/II)"):
