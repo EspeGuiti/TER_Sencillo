@@ -767,7 +767,7 @@ if (
         edited.loc[m, "Usar versión original (I)"] = True
     
         if st.button("✅ Aplicar selección"):
-        st.session_state[key_df] = edited[editor_cols].copy()
+            st.session_state[key_df] = edited[editor_cols].copy()
 
     # Familias seleccionadas
     selected = st.session_state[key_df].loc[st.session_state[key_df]["Incluir"], ["Family Name","Usar versión original (I)"]].copy()
